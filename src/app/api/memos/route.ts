@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { checkCsrf } from '@/lib/csrf-guard';
 import { db } from '@/lib/db';
 
 export const runtime = 'edge';
@@ -75,6 +76,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: '未授权' }, { status: 401 });
   }
 
+  // 🛡️ 安全修复 (P1 · L-04)：CSRF 纵深防御
+  const csrf = checkCsrf(request);
+  if (!csrf.ok) return csrf.response!;
+
   try {
     // 1. 物理防御：限制请求体最大 50KB
     const rawBody = await parseSafeBody(request, 50);
@@ -118,6 +123,10 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: '未授权' }, { status: 401 });
   }
 
+  // 🛡️ 安全修复 (P1 · L-04)：CSRF 纵深防御
+  const csrf = checkCsrf(request);
+  if (!csrf.ok) return csrf.response!;
+
   try {
     // 物理防御：仅包含 ID 的请求，限制请求体最大 10KB
     const rawBody = await parseSafeBody(request, 10);
@@ -138,8 +147,15 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '无效的便签 ID 格式' }, { status: 400 });
     }
 
-    // 只有作者本人可以在存储层成功匹配并删除自己的便签
-    await (db as any).storage.deleteMemo(authInfo.username, memoId);
+    // 🛡️ 逻辑修复 (P3 · L-03)：只有作者本人可以在存储层成功匹配并删除自己的便签；
+    // 根据返回值区分"确实删除了一条"与"未找到匹配记录"，不再对后者也返回虚假成功。
+    const deleted = await (db as any).storage.deleteMemo(authInfo.username, memoId);
+    if (!deleted) {
+      return NextResponse.json(
+        { error: '未找到该便签，或你无权删除它' },
+        { status: 404 }
+      );
+    }
     return NextResponse.json({ success: true });
 
   } catch (error: any) {

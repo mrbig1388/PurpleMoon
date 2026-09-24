@@ -95,7 +95,11 @@ export interface IStorage {
   // 便利贴相关（已改为全员共享，查询时不强制锁定用户）
   getMemos(currentUserName?: string): Promise<Memo[]>;
   addMemo(userName: string, content: string): Promise<void>;
-  deleteMemo(userName: string, memoId: number): Promise<void>;
+  // 🛡️ 逻辑修复 (P3 · L-03)：返回值由 void 改为 boolean，
+  // true 表示确实命中并删除了一条属于该用户的记录，false 表示未找到
+  // （不存在该 ID，或该 ID 不属于当前用户）。调用方据此区分
+  // "真删除成功" 与 "无操作但仍返回成功" 两种情况。
+  deleteMemo(userName: string, memoId: number): Promise<boolean>;
 
   // 【新增】：全局分布式限流机制 (用于登录/注册防刷)
   checkRateLimit(key: string, limit: number, windowMs: number): Promise<boolean>;

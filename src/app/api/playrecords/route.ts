@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { checkCsrf } from '@/lib/csrf-guard';
 import { db } from '@/lib/db';
 import { PlayRecord } from '@/lib/types';
 
@@ -28,6 +29,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  // 🛡️ 安全修复 (P1 · L-04)：CSRF 纵深防御
+  const csrf = checkCsrf(request);
+  if (!csrf.ok) return csrf.response!;
+
   try {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
@@ -80,6 +85,10 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  // 🛡️ 安全修复 (P1 · L-04)：该接口走 query string、无请求体
+  const csrf = checkCsrf(request, { requireJsonContentType: false });
+  if (!csrf.ok) return csrf.response!;
+
   try {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);

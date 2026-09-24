@@ -2,9 +2,10 @@
 
 import { Redis } from '@upstash/redis';
 
-import { hashPassword, verifyPassword } from './password'; // 【安全升级】：引入加盐哈希与防时序攻击验证
 import { AdminConfig } from './admin.types';
-import { Favorite, IStorage, PlayRecord, SkipConfig, Memo } from './types'; // 引入 SkipConfig 和 Memo
+import { ConfigConflictError } from './config-errors';
+import { hashPassword, verifyPassword } from './password'; // 【安全升级】：引入加盐哈希与防时序攻击验证
+import { Favorite, IStorage, Memo,PlayRecord, SkipConfig } from './types'; // 引入 SkipConfig 和 Memo
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -284,7 +285,49 @@ export class UpstashRedisStorage implements IStorage {
   }
 
   async setAdminConfig(config: AdminConfig): Promise<void> {
-    await withRetry(() => this.client.set(this.adminConfigKey(), config));
+    // 🛡️ 逻辑修复 (P2 · L-02)：乐观并发控制。
+    // Upstash 是无状态的 HTTP REST 客户端，不支持 node-redis 那种
+    // WATCH/MULTI/EXEC 事务，改用 Lua 脚本（EVAL 在 Redis 中保证原子执行）
+    // 实现"读版本号 → 比对 → 写入"的单步原子操作，与本文件里限流逻辑
+    // 已经在用的 Lua 脚本模式保持一致。
+    const expectedVersion = config.configVersion ?? 0;
+    const newVersion = expectedVersion + 1;
+    const newConfig = { ...config, configVersion: newVersion };
+
+    const casLua = `
+      local key = KEYS[1]
+      local expectedVersion = tonumber(ARGV[1])
+      local newValue = ARGV[2]
+
+      local raw = redis.call('GET', key)
+      local currentVersion = 0
+      if raw then
+        local ok, decoded = pcall(cjson.decode, raw)
+        if ok and decoded and decoded.configVersion then
+          currentVersion = decoded.configVersion
+        end
+      end
+
+      if currentVersion == expectedVersion then
+        redis.call('SET', key, newValue)
+        return 1
+      else
+        return 0
+      end
+    `;
+
+    const result = await withRetry(() =>
+      this.client.eval(
+        casLua,
+        [this.adminConfigKey()],
+        [String(expectedVersion), JSON.stringify(newConfig)]
+      )
+    );
+
+    if (Number(result) !== 1) {
+      throw new ConfigConflictError();
+    }
+    config.configVersion = newVersion;
   }
 
   // =========================================================================
@@ -386,11 +429,11 @@ export class UpstashRedisStorage implements IStorage {
     await withRetry(() => this.client.ltrim(this.memosKey(), 0, MEMO_LIMIT - 1));
   }
 
-  async deleteMemo(userName: string, memoId: number): Promise<void> {
+  async deleteMemo(userName: string, memoId: number): Promise<boolean> {
     const list = await withRetry(() =>
       this.client.lrange<string | object>(this.memosKey(), 0, -1)
     );
-    if (!list || list.length === 0) return;
+    if (!list || list.length === 0) return false;
 
     for (const item of list) {
       const memo = typeof item === 'string' ? JSON.parse(item) : item;
@@ -398,9 +441,10 @@ export class UpstashRedisStorage implements IStorage {
         const targetStr = typeof item === 'string' ? item : JSON.stringify(item);
         // 原子删除指定元素
         await withRetry(() => this.client.lrem(this.memosKey(), 1, targetStr));
-        break;
+        return true;
       }
     }
+    return false;
   }
 
   // =========================================================================

@@ -4,7 +4,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getConfig } from '@/lib/config';
+import { getConfig, withConfigConflictRetry } from '@/lib/config';
+import { checkCsrf } from '@/lib/csrf-guard';
 import { getStorage } from '@/lib/db';
 
 export const runtime = 'edge';
@@ -42,23 +43,9 @@ async function parseSafeBody(request: NextRequest, maxSizeKB: number) {
 }
 
 export async function POST(request: NextRequest) {
-  // ==========================================
-  // 🛡️ CSRF 纵深防御第一道防线：Origin 校验
-  // ==========================================
-  const origin = request.headers.get('origin');
-  const host = request.headers.get('host');
-  if (origin && new URL(origin).host !== host) {
-    console.warn(`[CSRF 拦截] 站点配置接口遇到异常的 Origin: ${origin}`);
-    return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
-  }
-
-  // ==========================================
-  // 🛡️ CSRF 纵深防御第二道防线：Content-Type 校验
-  // ==========================================
-  const contentType = request.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    return NextResponse.json({ error: 'Unsupported Media Type: must be application/json' }, { status: 415 });
-  }
+  // 🛡️ CSRF 纵深防御（统一使用 lib/csrf-guard.ts）
+  const csrf = checkCsrf(request);
+  if (!csrf.ok) return csrf.response!;
 
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
   if (storageType === 'localstorage') {
@@ -87,6 +74,8 @@ export async function POST(request: NextRequest) {
       ImageProxy,
     } = parsed.data;
 
+    // 🛡️ 逻辑修复 (P2 · L-02)：整体是纯配置替换，无一次性副作用，可安全整体重试
+    return await withConfigConflictRetry(async () => {
     const adminConfig = await getConfig();
     const storage = getStorage();
 
@@ -121,6 +110,7 @@ export async function POST(request: NextRequest) {
         },
       }
     );
+    }); // 结束 withConfigConflictRetry 包裹的闭包
   } catch (error: any) {
     if (error.message === 'Payload Too Large') {
       return NextResponse.json({ error: '请求体过大' }, { status: 413 });

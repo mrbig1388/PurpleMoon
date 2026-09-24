@@ -1,8 +1,9 @@
 /* eslint-disable no-console, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
-import { hashPassword, verifyPassword } from './password'; // 修补密码明文时序攻击 (Timing Attack)
 import { AdminConfig } from './admin.types';
-import { Favorite, IStorage, PlayRecord, SkipConfig, Memo } from './types'; // 引入 Memo 类型
+import { ConfigConflictError } from './config-errors';
+import { hashPassword, verifyPassword } from './password'; // 修补密码明文时序攻击 (Timing Attack)
+import { Favorite, IStorage, Memo,PlayRecord, SkipConfig } from './types'; // 引入 Memo 类型
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -486,13 +487,51 @@ export class D1Storage implements IStorage {
   async setAdminConfig(config: AdminConfig): Promise<void> {
     try {
       const db = await this.getDatabase();
-      await db
+      // 🛡️ 逻辑修复 (P2 · L-02)：乐观并发控制。
+      // expectedVersion 是调用方读取配置时看到的版本号；仅当数据库中
+      // 当前版本与之一致时才允许写入，并将版本号原子自增。
+      // 用 SQLite 的 json_extract 在 WHERE 子句里做版本比对，
+      // 整个"比对 + 写入"是单条 UPDATE 语句，天然具备原子性，
+      // 不需要额外加锁或事务。
+      const expectedVersion = config.configVersion ?? 0;
+      const newVersion = expectedVersion + 1;
+      const newConfig = { ...config, configVersion: newVersion };
+      const serialized = JSON.stringify(newConfig);
+
+      const updateResult = await db
         .prepare(
-          'INSERT OR REPLACE INTO admin_config (id, config) VALUES (1, ?)'
+          `UPDATE admin_config
+           SET config = ?
+           WHERE id = 1
+             AND COALESCE(json_extract(config, '$.configVersion'), 0) = ?`
         )
-        .bind(JSON.stringify(config))
+        .bind(serialized, expectedVersion)
         .run();
+
+      if ((updateResult?.meta?.changes ?? 0) > 0) {
+        config.configVersion = newVersion;
+        return;
+      }
+
+      // UPDATE 影响 0 行：要么记录尚不存在（首次写入），要么版本不匹配（并发冲突）
+      const existing = await db
+        .prepare('SELECT 1 FROM admin_config WHERE id = 1')
+        .first();
+
+      if (!existing) {
+        await db
+          .prepare('INSERT INTO admin_config (id, config) VALUES (1, ?)')
+          .bind(serialized)
+          .run();
+        config.configVersion = newVersion;
+        return;
+      }
+
+      throw new ConfigConflictError();
     } catch (err) {
+      if (err instanceof ConfigConflictError) {
+        throw err;
+      }
       console.error('Failed to set admin config:', err);
       throw err;
     }
@@ -680,17 +719,20 @@ export class D1Storage implements IStorage {
     }
   }
 
-  async deleteMemo(userName: string, memoId: number): Promise<void> {
+  async deleteMemo(userName: string, memoId: number): Promise<boolean> {
     try {
       const db = await this.getDatabase();
       // 鉴权校验：仅允许作者删除自己的便利贴
-      await db
+      const result = await db
         .prepare('DELETE FROM user_memos WHERE id = ? AND username = ?')
         .bind(memoId, userName)
         .run();
+      // 🛡️ 逻辑修复 (P3 · L-03)：D1 的 run() 结果包含 meta.changes，
+      // 即实际被删除的行数；据此判断本次调用是否真的命中了一条记录。
+      return (result?.meta?.changes ?? 0) > 0;
     } catch (err: any) {
       if (err.message && err.message.includes('no such table')) {
-        return;
+        return false;
       }
       console.error('Failed to delete memo:', err);
       throw err;

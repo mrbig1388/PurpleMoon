@@ -45,7 +45,7 @@
 - [AndroidTV 使用](#AndroidTV-使用)
 - [Roadmap](#roadmap)
 - [安全与隐私提醒](#安全与隐私提醒)
-- [V1.7版本更新内容](#V1.7版本更新内容)
+- [版本更新内容](#V2.3版本更新内容)
 - [License](#license)
 - [致谢](#致谢)
 
@@ -206,21 +206,23 @@ networks:
 
 | 变量                        | 说明                                                        | 可选值                           | 默认值                                                                                                                     |
 | --------------------------- | ----------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| USERNAME                    | redis 部署时的管理员账号                                    | 任意字符串                       | 空                                                                                                                   |
-| PASSWORD                    | 默认部署时为唯一访问密码，redis 部署时为管理员密码          | 任意字符串                       | 空                                                                                                                   |
-| SITE_NAME                   | 站点名称                                                    | 任意字符串                       | PurpleMoon                                                                                                                     |
-| ANNOUNCEMENT                | 站点公告                                                    | 任意字符串                       | 本网站仅提供影视信息搜索服务，所有内容均来自第三方网站。本站不存储任何视频资源，不对任何内容的准确性、合法性、完整性负责。 |
-| NEXT_PUBLIC_STORAGE_TYPE    | 播放记录/收藏的存储方式                                     | localstorage、redis、d1、upstash | localstorage                                                                                                               |
+| USERNAME                    | redis 部署时的管理员账号*                             | 任意字符串                       | 空                                                                                                                   |
+| PASSWORD                    | 默认部署时为唯一访问密码，redis 部署时为管理员密码*             | 任意字符串                       | 空                                                                                                                   |
+| SITE_NAME                   | 站点名称                                                   | 任意字符串                       | PurpleMoon                                                                                                                     |
+| ANNOUNCEMENT                | 站点公告                                                 | 任意字符串                       | 本网站仅提供影视信息搜索服务，所有内容均来自第三方网站。本站不存储任何视频资源，不对任何内容的准确性、合法性、完整性负责。 |
+| NEXT_PUBLIC_STORAGE_TYPE    | 播放记录/收藏的存储方式*                                    | localstorage、redis、d1、upstash | localstorage                                                                                                               |
 | REDIS_URL                   | redis 连接 url，若 NEXT_PUBLIC_STORAGE_TYPE 为 redis 则必填 | 连接 url                         | 空                                                                                                                         |
 | UPSTASH_URL                 | upstash redis 连接 url                                      | 连接 url                         | 空                                                                                                                         |
 | UPSTASH_TOKEN               | upstash redis 连接 token                                    | 连接 token                       | 空                                                                                                                         |
-| NEXT_PUBLIC_ENABLE_REGISTER | 是否开放注册，仅在非 localstorage 部署时生效                | true / false                     | false                                                                                                                      |
+| NEXT_PUBLIC_ENABLE_REGISTER | 是否开放注册，仅在非 localstorage 部署时生效*                | true / false                     | false                                                                                                                      |
 | NEXT_PUBLIC_SEARCH_MAX_PAGE | 搜索接口可拉取的最大页数                                    | 1-50                             | 5                                                                                                                          |
 | NEXT_PUBLIC_IMAGE_PROXY     | 默认的浏览器端图片代理                                      | https://timis.dpdns.org/?url=     | 空                                                                                                                     |
-| TMDB_API_TOKEN              | 上映日程TMDBTOKEN                                     | API 读访问令牌                          | 空                                                                                                                         |
-| VALID_INVITE_CODE           | 注册邀请码（安全）                                            | 任意字符串                              | 空                                
-| AUTH_SECRET                 | 环境变量隔离（安全）                                            | 任意字符串越长越好                    | 空                                                                                                                                                                                                       
-| CRON_SECRET                 | 为 Cron 任务加上密钥校验 (安全)                                       | 任意字符串越长越好                    | 空                                                                                                                                                                                           
+| TMDB_API_TOKEN              | 上映日程TMDBTOKEN*                                     | API 读访问令牌                          | 空                                                                                                                         |
+| VALID_INVITE_CODE           | 注册邀请码*                                                    | 任意字符串                              | 空                        
+| REQUIRE_INVITE_CODE         | 是否强制邀请码注册*                                                        | true/false                    | 空                         
+| AUTH_SECRET                 | 环境变量隔离*                                            | 建议任意32以上位字符串                    | 空                                                                                                                                                                                                       
+| CRON_SECRET                 | 为 Cron 任务加上密钥校验*                                         | 建议任意32以上位字符串                     | 空                  
+| TRUST_X_FORWARDED_FOR  | 设为 true 才会信任 x-forwarded-for 头做限流 IP 识别。如果是自建 Docker 部署、且前面确实有一层会正确清洗该请求头的反向代理（如配置正确的 Nginx），需要设置为 true，否则限流会把所有非 Cloudflare 来源的请求都归入同一个 unknown_ip 桶，可能导致正常用户之间互相影响限流阈值。部署在 Cloudflare时，可忽略这个变量。                                                                   | true                    | 空                 
 ## 配置说明
 
 所有可自定义项集中在根目录的 `config.json` 中：
@@ -295,10 +297,10 @@ PurpleMoon 支持标准的苹果 CMS V10 API 格式。
 - 如因公开分享导致的任何法律问题，用户需自行承担责任
 - 项目开发者不对用户的使用行为承担任何法律责任
 
-### V2.2版本更新内容
+## V2.3版本更新内容
 
 - 1.增加视频解析
-- 2.增加MEMO功能
+- 2.增加MEMO功能（2.2开始改用为用户互通留言板）
 - 3.增加TMDB热门和最近上映的数据调用
 - 4.增加源浏览功能
 - 5.增加邀请注册制
@@ -306,13 +308,14 @@ PurpleMoon 支持标准的苹果 CMS V10 API 格式。
 - 7.增加为 Cron 任务加上密钥校验
 - 8.增加自定义自动跳过片头片尾功能并支持同步D1和UPSTASH、REDIS
 - 9.修复单点内存限流在分布式多节点部署中的问题实现分布式限流
-- 10.修复单点内存限流在分布式多节点部署中的问题实现分布式限流
-- 11.优化广告切片过滤
-- 12.增加用户密码盐哈希
-- 13.修补密码明文时序攻击 (Timing Attack)
-- 14.增加COOKIS时间戳
-- 15.去除失效依赖更并更新至最新和锁定部份依赖版本
-- 16.其它BUG修复及功能体验优化。
+- 10.优化广告切片过滤
+- 11.增加用户密码盐哈希
+- 12.修补密码明文时序攻击 (Timing Attack)
+- 13.增加COOKIS时间戳
+- 14.去除失效依赖更并更新至最新和锁定部份依赖版本
+- 15.其它BUG修复及功能体验优化。
+- 16.CSRF 校验统一到全部写接口
+- 17.移除0引用依赖和部份依赖的版本对齐。
 ## License
 
 [MIT](LICENSE) © 2025 MoonTV & Contributors

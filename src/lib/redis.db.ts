@@ -2,9 +2,10 @@
 
 import { createClient, RedisClientType } from 'redis';
 
-import { hashPassword, verifyPassword } from './password';
 import { AdminConfig } from './admin.types';
-import { Favorite, IStorage, PlayRecord, SkipConfig, Memo } from './types';
+import { ConfigConflictError } from './config-errors';
+import { hashPassword, verifyPassword } from './password';
+import { Favorite, IStorage, Memo,PlayRecord, SkipConfig } from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -220,7 +221,46 @@ export class RedisStorage implements IStorage {
   }
 
   async setAdminConfig(config: AdminConfig): Promise<void> {
-    await this.client.set(this.adminConfigKey(), JSON.stringify(config));
+    // 🛡️ 逻辑修复 (P2 · L-02)：乐观并发控制。
+    // 用 WATCH/MULTI/EXEC 实现"比对版本号 + 写入"的原子事务：
+    // WATCH 期间若该 key 被其他连接修改过，EXEC 会返回 null，
+    // 借此判断是否发生了并发写冲突。
+    const key = this.adminConfigKey();
+    const expectedVersion = config.configVersion ?? 0;
+    const newVersion = expectedVersion + 1;
+    const newConfig = { ...config, configVersion: newVersion };
+
+    await this.client.watch(key);
+    try {
+      const raw = await this.client.get(key);
+      const current = safeJsonParse<AdminConfig>(raw);
+      const currentVersion = current?.configVersion ?? 0;
+
+      if (currentVersion !== expectedVersion) {
+        await this.client.unwatch();
+        throw new ConfigConflictError();
+      }
+
+      const execResult = await this.client
+        .multi()
+        .set(key, JSON.stringify(newConfig))
+        .exec();
+
+      if (execResult === null) {
+        // WATCH 探测到 key 在此期间被其他请求修改，事务被打断
+        throw new ConfigConflictError();
+      }
+
+      config.configVersion = newVersion;
+    } catch (err) {
+      // 确保异常路径下也不遗留 WATCH 状态
+      try {
+        await this.client.unwatch();
+      } catch {
+        // 忽略 unwatch 本身的错误，不掩盖原始异常
+      }
+      throw err;
+    }
   }
 
   // =========================================================================
@@ -317,17 +357,18 @@ export class RedisStorage implements IStorage {
     await this.client.lTrim(this.memosKey(), 0, MEMO_LIMIT - 1);
   }
 
-  async deleteMemo(userName: string, memoId: number): Promise<void> {
+  async deleteMemo(userName: string, memoId: number): Promise<boolean> {
     const rawList = await this.client.lRange(this.memosKey(), 0, -1);
-    if (!rawList || rawList.length === 0) return;
+    if (!rawList || rawList.length === 0) return false;
 
     for (const itemStr of rawList) {
       const memo = safeJsonParse<Memo>(itemStr);
       if (memo && memo.id === memoId && memo.username === userName) {
         await this.client.lRem(this.memosKey(), 1, itemStr);
-        break;
+        return true;
       }
     }
+    return false;
   }
 
   // =========================================================================

@@ -2,8 +2,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { signAuthPayload } from '@/lib/auth';
+import { getClientIp } from '@/lib/client-ip';
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
+import { timingSafeEqual } from '@/lib/password';
 
 export const runtime = 'edge';
 
@@ -71,7 +73,8 @@ function setDualCookies(response: NextResponse, authValue: string, username: str
 
 export async function POST(req: NextRequest) {
   try {
-    const ip = req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || 'unknown_ip';
+    // 🛡️ 安全修复 (P2 · L-05)：统一、可配置的 IP 识别逻辑（详见 lib/client-ip.ts）
+    const ip = getClientIp(req);
     if (!(await checkRateLimit(ip))) {
       return NextResponse.json({ error: '请求过于频繁，请 1 分钟后再试' }, { status: 429 });
     }
@@ -91,7 +94,17 @@ export async function POST(req: NextRequest) {
     const { username, password, inviteCode } = await req.json();
 
     // ================= 强制邀请码校验 (Fail Closed) =================
-    const requireInviteCode = process.env.NEXT_PUBLIC_ENABLE_REGISTER === 'true';
+    // 🛡️ 安全修复 (P1 · L-01)：
+    // 1) 原实现复用 NEXT_PUBLIC_ENABLE_REGISTER 同时表达"是否开放注册"和
+    //    "是否需要邀请码"两层语义，容易让运维在只想打开注册功能时，
+    //    无意中一并开启了邀请码强制校验。这里拆分为独立的 REQUIRE_INVITE_CODE
+    //    开关，同时向后兼容旧的 NEXT_PUBLIC_ENABLE_REGISTER 行为（未显式配置
+    //    REQUIRE_INVITE_CODE 时退回旧逻辑，避免已部署环境行为突变）。
+    // 2) 邀请码比较由 `!==` 改为恒定时间比较，避免逐字符比较带来的时序侧信道。
+    const requireInviteCode =
+      process.env.REQUIRE_INVITE_CODE !== undefined
+        ? process.env.REQUIRE_INVITE_CODE === 'true'
+        : process.env.NEXT_PUBLIC_ENABLE_REGISTER === 'true';
     const validInviteCode = process.env.VALID_INVITE_CODE;
 
     if (requireInviteCode) {
@@ -103,8 +116,8 @@ export async function POST(req: NextRequest) {
       if (!inviteCode || typeof inviteCode !== 'string') {
         return NextResponse.json({ error: '系统已开启邀请制，必须填写邀请码才可注册' }, { status: 400 });
       }
-      
-      if (inviteCode !== validInviteCode) {
+
+      if (!timingSafeEqual(inviteCode, validInviteCode)) {
         return NextResponse.json({ error: '邀请码错误或已失效' }, { status: 403 });
       }
     }

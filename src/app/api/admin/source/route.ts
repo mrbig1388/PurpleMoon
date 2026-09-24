@@ -3,7 +3,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getConfig } from '@/lib/config';
+import { getConfig, withConfigConflictRetry } from '@/lib/config';
+import { checkCsrf } from '@/lib/csrf-guard';
 import { getStorage } from '@/lib/db';
 import { checkUpstreamUrlSafety } from '@/lib/ssrf-guard';
 import { IStorage } from '@/lib/types';
@@ -18,25 +19,9 @@ interface BaseBody {
 }
 
 export async function POST(request: NextRequest) {
-  // ==========================================
-  // 🛡️ CSRF 纵深防御第一道防线：Origin 校验
-  // ==========================================
-  const origin = request.headers.get('origin');
-  const host = request.headers.get('host');
-  // 如果请求带有 Origin 且与当前主机的 host 不匹配，直接拦截
-  if (origin && new URL(origin).host !== host) {
-    console.warn(`[CSRF 拦截] 视频源管理接口遇到异常的 Origin: ${origin}`);
-    return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
-  }
-
-  // ==========================================
-  // 🛡️ CSRF 纵深防御第二道防线：Content-Type 校验
-  // 跨站表单 (<form>) 无法伪造 application/json，这会强制触发浏览器预检 (OPTIONS)
-  // ==========================================
-  const contentType = request.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    return NextResponse.json({ error: 'Unsupported Media Type: must be application/json' }, { status: 415 });
-  }
+  // 🛡️ CSRF 纵深防御（统一使用 lib/csrf-guard.ts）
+  const csrf = checkCsrf(request);
+  if (!csrf.ok) return csrf.response!;
 
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
   if (storageType === 'localstorage') {
@@ -64,6 +49,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '参数格式错误' }, { status: 400 });
     }
 
+    // 🛡️ 逻辑修复 (P2 · L-02)：本接口的全部分支都是纯配置对象编辑
+    // （push/find/splice/重排），不含任何一次性副作用调用，可以安全地
+    // 整体重试：每次重试都会重新 getConfig() 拿到最新数据再重新应用。
+    return await withConfigConflictRetry(async () => {
     // 获取配置与存储
     const adminConfig = await getConfig();
     const storage: IStorage | null = getStorage();
@@ -197,6 +186,7 @@ export async function POST(request: NextRequest) {
         },
       }
     );
+    }); // 结束 withConfigConflictRetry 包裹的闭包
   } catch (error) {
     console.error('视频源管理操作失败:', error);
     return NextResponse.json(

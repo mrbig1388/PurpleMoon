@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { signAuthPayload } from '@/lib/auth';
+import { getClientIp } from '@/lib/client-ip';
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { timingSafeEqual } from '@/lib/password';
@@ -38,16 +39,8 @@ function checkLocalRateLimit(ip: string): boolean {
 }
 
 async function checkRateLimit(req: NextRequest): Promise<boolean> {
-  // 🛡️ 安全获取真实客户端 IP：优先信任 Cloudflare 边缘真实 IP，防止 x-forwarded-for 伪造污染
-  const cfIp = req.headers.get('cf-connecting-ip');
-  const xff = req.headers.get('x-forwarded-for');
-  
-  let rawIp = cfIp;
-  if (!rawIp && xff) {
-    // 仅取 x-forwarded-for 链条中的第一个（真实客户端 IP），并做字符截断防注入
-    rawIp = xff.split(',')[0].trim();
-  }
-  const ip = (rawIp && rawIp.length < 50) ? rawIp : 'unknown_ip';
+  // 🛡️ 安全修复 (P2 · L-05)：统一、可配置的 IP 识别逻辑（详见 lib/client-ip.ts）
+  const ip = getClientIp(req);
 
   if (STORAGE_TYPE === 'localstorage') {
     return checkLocalRateLimit(ip);

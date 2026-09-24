@@ -3,7 +3,7 @@
 import { AdminConfig } from './admin.types';
 import { D1Storage } from './d1.db';
 import { RedisStorage } from './redis.db';
-import { Favorite, IStorage, PlayRecord, Memo } from './types'; // 【修复】：增加了 Memo 的导入
+import { Favorite, IStorage, Memo,PlayRecord } from './types'; // 【修复】：增加了 Memo 的导入
 import { UpstashRedisStorage } from './upstash.db';
 
 // 【新增】：跳过片头片尾的类型定义
@@ -268,10 +268,11 @@ export class DbManager {
     }
   }
 
-  async deleteMemo(userName: string, memoId: number): Promise<void> {
+  async deleteMemo(userName: string, memoId: number): Promise<boolean> {
     if (this.storage && typeof (this.storage as any).deleteMemo === 'function') {
-      await (this.storage as any).deleteMemo(userName, memoId);
+      return await (this.storage as any).deleteMemo(userName, memoId);
     }
+    return false;
   }
 
   // =========================================================================

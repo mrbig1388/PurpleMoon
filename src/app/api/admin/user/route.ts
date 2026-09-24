@@ -3,7 +3,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getConfig } from '@/lib/config';
+import { getConfig, withConfigConflictRetry } from '@/lib/config';
+import { checkCsrf } from '@/lib/csrf-guard';
 import { getStorage } from '@/lib/db';
 import { IStorage } from '@/lib/types';
 
@@ -22,25 +23,9 @@ const ACTIONS = [
 ] as const;
 
 export async function POST(request: NextRequest) {
-  // ==========================================
-  // 🛡️ CSRF 纵深防御第一道防线：Origin 校验
-  // ==========================================
-  const origin = request.headers.get('origin');
-  const host = request.headers.get('host');
-  // 如果请求带有 Origin 且与当前主机的 host 不匹配，直接拦截
-  if (origin && new URL(origin).host !== host) {
-    console.warn(`[CSRF 拦截] 用户管理接口遇到异常的 Origin: ${origin}`);
-    return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
-  }
-
-  // ==========================================
-  // 🛡️ CSRF 纵深防御第二道防线：Content-Type 校验
-  // 跨站表单 (<form>) 无法伪造 application/json，这会强制触发浏览器预检 (OPTIONS)
-  // ==========================================
-  const contentType = request.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    return NextResponse.json({ error: 'Unsupported Media Type: must be application/json' }, { status: 415 });
-  }
+  // 🛡️ CSRF 纵深防御（统一使用 lib/csrf-guard.ts，与其他接口保持一致）
+  const csrf = checkCsrf(request);
+  if (!csrf.ok) return csrf.response!;
 
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
   if (storageType === 'localstorage') {
@@ -93,6 +78,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 🛡️ 逻辑修复 (P2 · L-02)：把"读配置→校验→修改→写回"整体包进并发冲突重试。
+    // 每次重试都会重新 getConfig() 读最新数据，而不是复用旧的配置对象，
+    // 避免两个管理员并发操作时其中一方的修改被静默覆盖。
+    return await withConfigConflictRetry(async () => {
     // 获取配置与存储
     const adminConfig = await getConfig();
     const storage: IStorage | null = getStorage();
@@ -136,6 +125,15 @@ export async function POST(request: NextRequest) {
     } else {
       switch (action) {
         case 'add': {
+          // 🛡️ 已知的并发重试边界情况（P2 · L-02）：
+          // storage.registerUser() 是一次性的真实副作用（写入密码哈希），
+          // 不具备幂等性，因此不适合被整体重试。如果它成功后紧接着的
+          // setAdminConfig 恰好遇到并发冲突，重试时 getConfig() 会因为
+          // 下面的"自我修复"逻辑（syncUsers）已经自动把这个新注册的真实账号
+          // 补回 Users 列表，导致这里误判为"用户已存在"并返回 400——
+          // 但此时账号事实上已经创建成功，只是这次响应文案具有误导性。
+          // 这是极端并发窗口下的已知取舍：相比修复前"配置写入被静默吞掉、
+          // 完全不重试"的行为，仍是明显的改进，只是没有做到完全语义精确。
           if (targetEntry) {
             return NextResponse.json({ error: '用户已存在' }, { status: 400 });
           }
@@ -344,6 +342,7 @@ export async function POST(request: NextRequest) {
         },
       }
     );
+    }); // 结束 withConfigConflictRetry 包裹的闭包
   } catch (error) {
     console.error('用户管理操作失败:', error);
     return NextResponse.json(
