@@ -10,6 +10,7 @@ export const SettingsButton: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [defaultAggregateSearch, setDefaultAggregateSearch] = useState(true);
   const [exactSearch, setExactSearch] = useState(true);
+  const [cardDisplayMode, setCardDisplayMode] = useState(true);
   const [enableStreamSearch, setEnableStreamSearch] = useState(true);
   const [imageProxyUrl, setImageProxyUrl] = useState('');
   const [enableOptimization, setEnableOptimization] = useState(true);
@@ -47,6 +48,13 @@ export const SettingsButton: React.FC = () => {
         } catch {
           setExactSearch(savedExactSearch === 'true');
         }
+      }
+
+      const savedDisplayMode = localStorage.getItem('searchResultDisplayMode');
+      if (savedDisplayMode === 'list') {
+        setCardDisplayMode(false);
+      } else if (savedDisplayMode === 'card') {
+        setCardDisplayMode(true);
       }
 
       const savedStreamSearch = localStorage.getItem('enableStreamSearch');
@@ -109,6 +117,19 @@ export const SettingsButton: React.FC = () => {
     }
   };
 
+  const handleCardDisplayModeToggle = (value: boolean) => {
+    setCardDisplayMode(value);
+    const mode = value ? 'card' : 'list';
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('searchResultDisplayMode', mode);
+      window.dispatchEvent(
+        new CustomEvent('localSettingsChanged', {
+          detail: { searchResultDisplayMode: mode },
+        })
+      );
+    }
+  };
+
   const handleStreamSearchToggle = (value: boolean) => {
     setEnableStreamSearch(value);
     if (typeof window !== 'undefined') {
@@ -157,6 +178,7 @@ export const SettingsButton: React.FC = () => {
     // 重置所有状态
     setDefaultAggregateSearch(true);
     setExactSearch(true);
+    setCardDisplayMode(true);
     setEnableStreamSearch(true);
     setEnableOptimization(true);
     setEnableImageProxy(!!defaultImageProxy);
@@ -166,6 +188,7 @@ export const SettingsButton: React.FC = () => {
     if (typeof window !== 'undefined') {
       localStorage.setItem('defaultAggregateSearch', JSON.stringify(true));
       localStorage.setItem('exactSearch', JSON.stringify(true));
+      localStorage.setItem('searchResultDisplayMode', 'card');
       localStorage.setItem('enableStreamSearch', JSON.stringify(true));
       localStorage.setItem('enableOptimization', JSON.stringify(true));
       localStorage.setItem('doubanProxyUrl', '');
@@ -179,6 +202,7 @@ export const SettingsButton: React.FC = () => {
           detail: {
             defaultAggregateSearch: true,
             exactSearch: true,
+            searchResultDisplayMode: 'card',
             enableStreamSearch: true,
           },
         })
@@ -263,6 +287,32 @@ export const SettingsButton: React.FC = () => {
                   className='sr-only peer'
                   checked={exactSearch}
                   onChange={(e) => handleExactSearchToggle(e.target.checked)}
+                />
+                <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
+                <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
+              </div>
+            </label>
+          </div>
+
+          {/* 搜索结果显示方式（卡片 / 列表） */}
+          <div className='flex items-center justify-between'>
+            <div>
+              <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                搜索结果卡片显示
+              </h4>
+              <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+                默认开启为卡片显示，关闭为列表显示
+              </p>
+            </div>
+            <label className='flex items-center cursor-pointer'>
+              <div className='relative'>
+                <input
+                  type='checkbox'
+                  className='sr-only peer'
+                  checked={cardDisplayMode}
+                  onChange={(e) =>
+                    handleCardDisplayModeToggle(e.target.checked)
+                  }
                 />
                 <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
                 <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>

@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/exhaustive-deps, @typescript-eslint/no-explicit-any, no-console, @next/next/no-img-element */
 'use client';
 
-import { ChevronUp, Grid2x2, List, RefreshCw, Search, X } from 'lucide-react';
+import { RefreshCw, Search, X } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -42,7 +42,7 @@ function SearchPageClient() {
   const [showResults, setShowResults] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
 
-  // 精确搜索设置（默认开启，与设置面板同步）
+  // 精确搜索设置（默认开启，由设置面板控制）
   const getInitialExactSearch = (): boolean => {
     if (typeof window !== 'undefined') {
       try {
@@ -96,23 +96,21 @@ function SearchPageClient() {
     return getDefaultAggregate() ? 'agg' : 'all';
   });
 
-  // 卡片 / 列表视图模式（持久化到 localStorage）
-  const [resultDisplayMode, setResultDisplayMode] = useState<'card' | 'list'>(
-    () => {
-      if (typeof window !== 'undefined') {
-        const saved = localStorage.getItem('searchResultDisplayMode');
-        if (saved === 'card' || saved === 'list') {
-          return saved;
-        }
+  // 卡片 / 列表视图模式（默认 card，由设置面板控制）
+  const getInitialDisplayMode = (): 'card' | 'list' => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('searchResultDisplayMode');
+      if (saved === 'card' || saved === 'list') {
+        return saved;
       }
-      return 'card';
     }
+    return 'card';
+  };
+
+  const [resultDisplayMode, setResultDisplayMode] = useState<'card' | 'list'>(
+    getInitialDisplayMode
   );
 
-  // 高级下拉菜单开关与外部点击关闭引用
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const advancedButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const advancedDropdownRefs = useRef<Array<HTMLDivElement | null>>([]);
   const [expandedSourceTags, setExpandedSourceTags] = useState<
     Record<string, boolean>
   >({});
@@ -142,23 +140,33 @@ function SearchPageClient() {
     yearOrder: 'none',
   });
 
-  // 监听设置面板变更事件与 storage 事件，实时同步 exactSearch / defaultAggregateSearch
+  // 监听设置面板变更事件与 storage 事件，实时同步 exactSearch / defaultAggregateSearch / searchResultDisplayMode
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const syncFromStorage = () => {
       setExactSearch(getInitialExactSearch());
+      setViewMode(getDefaultAggregate() ? 'agg' : 'all');
+      setResultDisplayMode(getInitialDisplayMode());
     };
 
     const handleCustomSettingsChange = (e: Event) => {
       const detail = (e as CustomEvent)?.detail;
       if (detail && typeof detail.exactSearch === 'boolean') {
         setExactSearch(detail.exactSearch);
-      } else {
-        syncFromStorage();
       }
       if (detail && typeof detail.defaultAggregateSearch === 'boolean') {
         setViewMode(detail.defaultAggregateSearch ? 'agg' : 'all');
+      }
+      if (
+        detail &&
+        (detail.searchResultDisplayMode === 'card' ||
+          detail.searchResultDisplayMode === 'list')
+      ) {
+        setResultDisplayMode(detail.searchResultDisplayMode);
+      }
+      if (!detail) {
+        syncFromStorage();
       }
     };
 
@@ -172,48 +180,6 @@ function SearchPageClient() {
       );
     };
   }, []);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('searchResultDisplayMode', resultDisplayMode);
-    }
-  }, [resultDisplayMode]);
-
-  useEffect(() => {
-    if (!advancedOpen) return;
-
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      const clickedButton = advancedButtonRefs.current.some((ref) =>
-        ref?.contains(target)
-      );
-      const clickedDropdown = advancedDropdownRefs.current.some((ref) =>
-        ref?.contains(target)
-      );
-
-      if (!clickedButton && !clickedDropdown) {
-        setAdvancedOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [advancedOpen]);
-
-  // 切换精确搜索并同步至设置面板
-  const handleExactSearchToggle = (value: boolean) => {
-    setExactSearch(value);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('exactSearch', JSON.stringify(value));
-      window.dispatchEvent(
-        new CustomEvent('localSettingsChanged', {
-          detail: { exactSearch: value },
-        })
-      );
-    }
-  };
 
   // 规范化标题用于聚合（去除特殊符号、括号、空格和全角空格）
   const normalizeTitle = (title: string) => {
@@ -1114,85 +1080,11 @@ function SearchPageClient() {
     );
   };
 
-  // 渲染「高级」下拉菜单内容（包含聚合、精确搜索、卡片/列表显示切换）
-  const renderAdvancedDropdown = (refIndex: number) => (
-    <div
-      ref={(el) => {
-        if (el) advancedDropdownRefs.current[refIndex] = el;
-      }}
-      className='absolute right-0 top-full z-[70] mt-2 w-56 rounded-xl border border-gray-200 bg-white p-3 shadow-lg dark:border-gray-700 dark:bg-gray-900'
-    >
-      <label className='flex cursor-pointer select-none items-center justify-between gap-3 rounded-lg px-1 py-2'>
-        <span className='text-sm text-gray-700 dark:text-gray-300'>聚合</span>
-        <div className='relative'>
-          <input
-            type='checkbox'
-            className='peer sr-only'
-            checked={viewMode === 'agg'}
-            onChange={() => setViewMode(viewMode === 'agg' ? 'all' : 'agg')}
-          />
-          <div className='h-5 w-9 rounded-full bg-gray-300 transition-colors peer-checked:bg-green-500 dark:bg-gray-600'></div>
-          <div className='absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform peer-checked:translate-x-4'></div>
-        </div>
-      </label>
-
-      <label className='flex cursor-pointer select-none items-center justify-between gap-3 rounded-lg px-1 py-2'>
-        <span className='text-sm text-gray-700 dark:text-gray-300'>
-          精确搜索
-        </span>
-        <div className='relative'>
-          <input
-            type='checkbox'
-            className='peer sr-only'
-            checked={exactSearch}
-            onChange={(e) => handleExactSearchToggle(e.target.checked)}
-          />
-          <div className='h-5 w-9 rounded-full bg-gray-300 transition-colors peer-checked:bg-green-500 dark:bg-gray-600'></div>
-          <div className='absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform peer-checked:translate-x-4'></div>
-        </div>
-      </label>
-
-      <div className='mt-2 border-t border-gray-200 pt-2 dark:border-gray-700'>
-        <span className='px-1 text-sm text-gray-700 dark:text-gray-300'>
-          显示方式
-        </span>
-        <div className='mt-2 grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1 dark:bg-gray-800'>
-          <button
-            type='button'
-            onClick={() => setResultDisplayMode('card')}
-            className={`inline-flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-sm transition-colors ${
-              resultDisplayMode === 'card'
-                ? 'bg-green-500 text-white'
-                : 'text-gray-600 hover:bg-white dark:text-gray-300 dark:hover:bg-gray-700'
-            }`}
-            aria-label='切换为卡片视图'
-          >
-            <Grid2x2 className='h-4 w-4' />
-            <span>卡片</span>
-          </button>
-          <button
-            type='button'
-            onClick={() => setResultDisplayMode('list')}
-            className={`inline-flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-sm transition-colors ${
-              resultDisplayMode === 'list'
-                ? 'bg-green-500 text-white'
-                : 'text-gray-600 hover:bg-white dark:text-gray-300 dark:hover:bg-gray-700'
-            }`}
-            aria-label='切换为列表视图'
-          >
-            <List className='h-4 w-4' />
-            <span>列表</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-
   return (
     <PageLayout activePath='/search'>
       <div className='px-4 sm:px-10 py-4 sm:py-8 overflow-visible mb-10'>
         {/* 搜索框 */}
-        <div className='mb-0'>
+        <div className='mb-8'>
           <form onSubmit={handleSearch} className='max-w-2xl mx-auto'>
             <div className='relative'>
               <Search className='absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400 dark:text-gray-500' />
@@ -1220,42 +1112,10 @@ function SearchPageClient() {
               )}
             </div>
           </form>
-
-          {!showResults && (
-            <div className='mx-auto mt-4 flex max-w-2xl justify-end'>
-              <div className='relative'>
-                <button
-                  ref={(el) => {
-                    if (el) advancedButtonRefs.current[0] = el;
-                  }}
-                  type='button'
-                  onClick={() => setAdvancedOpen((prev) => !prev)}
-                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                    advancedOpen
-                      ? 'bg-green-50 text-green-600 dark:bg-gray-700/70 dark:text-green-400'
-                      : 'text-gray-600 hover:bg-green-50 hover:text-green-600 dark:text-gray-400 dark:hover:bg-gray-700/50 dark:hover:text-green-400'
-                  }`}
-                  aria-expanded={advancedOpen}
-                >
-                  <span>高级</span>
-                  <ChevronUp
-                    className={`h-4 w-4 transition-transform ${
-                      advancedOpen ? '' : 'rotate-180'
-                    }`}
-                  />
-                </button>
-                {advancedOpen && renderAdvancedDropdown(0)}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* 搜索结果或搜索历史 */}
-        <div
-          className={`max-w-[95%] mx-auto overflow-visible ${
-            !showResults ? 'mt-4' : 'mt-10'
-          }`}
-        >
+        <div className='max-w-[95%] mx-auto mt-12 overflow-visible'>
           {showResults ? (
             <section className='mb-12'>
               {/* 标题 + 聚合结果与搜索源比对统计 + 刷新按钮 */}
@@ -1326,7 +1186,7 @@ function SearchPageClient() {
                 </div>
               </div>
 
-              {/* 来源 / 标题 / 年份 筛选栏 + 高级（聚合/精确搜索/卡片与列表显示切换） */}
+              {/* 来源 / 标题 / 年份 筛选栏 */}
               <div className='mb-4 flex items-center gap-3'>
                 <div className='min-w-0 flex-1'>
                   {viewMode === 'agg' ? (
@@ -1342,29 +1202,6 @@ function SearchPageClient() {
                       onChange={(v) => setFilterAll(v)}
                     />
                   )}
-                </div>
-                <div className='relative flex shrink-0 items-center justify-end self-center'>
-                  <button
-                    ref={(el) => {
-                      if (el) advancedButtonRefs.current[1] = el;
-                    }}
-                    type='button'
-                    onClick={() => setAdvancedOpen((prev) => !prev)}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                      advancedOpen
-                        ? 'bg-green-50 text-green-600 dark:bg-gray-700/70 dark:text-green-400'
-                        : 'text-gray-600 hover:bg-green-50 hover:text-green-600 dark:text-gray-400 dark:hover:bg-gray-700/50 dark:hover:text-green-400'
-                    }`}
-                    aria-expanded={advancedOpen}
-                  >
-                    <span>高级</span>
-                    <ChevronUp
-                      className={`h-4 w-4 transition-transform ${
-                        advancedOpen ? '' : 'rotate-180'
-                      }`}
-                    />
-                  </button>
-                  {advancedOpen && renderAdvancedDropdown(1)}
                 </div>
               </div>
 
