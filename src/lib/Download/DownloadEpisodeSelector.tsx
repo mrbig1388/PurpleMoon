@@ -316,7 +316,7 @@ const DownloadEpisodeSelector: React.FC<DownloadEpisodeSelectorProps> = ({
               disabled={selectedEpisodes.size === 0}
               className='px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-emerald-500 hover:bg-emerald-600 rounded-xl transition-colors shadow-md shadow-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed'
             >
-              开始分片下载{' '}
+              开始下载{' '}
               {selectedEpisodes.size > 0 && `(${selectedEpisodes.size})`}
             </button>
           </div>
