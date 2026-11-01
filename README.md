@@ -15,7 +15,7 @@
 ![Docker Ready](https://img.shields.io/badge/Docker-ready-blue?logo=docker)
 ![HLS](https://img.shields.io/badge/HLS-1.7.3-8A2BE2)
 ![Artplayer](https://img.shields.io/badge/Artplayer-5.4.0-RED)
-![Version](https://img.shields.io/badge/Version-2.8.6-red)
+![Version](https://img.shields.io/badge/Version-2.8.7-red)
 ![Github](https://img.shields.io/badge/github-PurpleSat-8A2BE2?logo=github)
 
 </div>

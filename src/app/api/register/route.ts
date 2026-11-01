@@ -21,6 +21,11 @@ import {
   verifyAndConsumeInviteCode,
   verifyInviteCodeReadOnly,
 } from '@/lib/invite';
+import {
+  isTurnstileRequiredForScene,
+  resolveTurnstileConfig,
+  verifyTurnstileToken,
+} from '@/lib/turnstile';
 import { isUsernameTaken } from '@/lib/username';
 
 export const runtime = 'edge';
@@ -46,6 +51,7 @@ const registerSchema = z.object({
     .min(6, '密码长度不能少于6位')
     .max(100, '密码长度不能超过100位'),
   inviteCode: z.string().trim().optional(),
+  turnstileToken: z.string().trim().optional(),
 });
 
 // =========== 防刷机制 (Rate Limiter) ===========
@@ -119,11 +125,27 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { username, password, inviteCode } = parseResult.data;
+    const { username, password, inviteCode, turnstileToken } = parseResult.data;
 
     const config = await getConfig();
     if (!config.UserConfig.AllowRegister) {
       return NextResponse.json({ error: '当前未开放注册' }, { status: 400 });
+    }
+
+    // Cloudflare Turnstile 注册环境人机验证
+    if (isTurnstileRequiredForScene(config, 'register')) {
+      const tc = resolveTurnstileConfig(config);
+      const turnstileRes = await verifyTurnstileToken({
+        token: turnstileToken,
+        secretKey: tc.SecretKey,
+        remoteIp: ip,
+      });
+      if (!turnstileRes.ok) {
+        return NextResponse.json(
+          { error: turnstileRes.error },
+          { status: 400 }
+        );
+      }
     }
 
     // 1. 快速只读预检邀请码（拦截空码、错误码、已耗尽码，不触发写锁）

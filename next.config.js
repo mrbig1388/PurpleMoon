@@ -2,24 +2,24 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 
 // =========================================================================
-// 【安全策略定制】：针对影视聚合网站的专属 CSP
+// 【安全策略定制】：针对影视聚合网站的专属 CSP（放行 Cloudflare Turnstile 验证脚本与 iframe）
 // =========================================================================
 const ContentSecurityPolicy = `
   default-src 'self';
-  script-src 'self' 'unsafe-inline';
+  script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com;
   style-src 'self' 'unsafe-inline';
   img-src * blob: data:;
   media-src * blob: data:;
   connect-src *;
   font-src 'self' data: https:;
   worker-src 'self' blob:;
-  frame-src 'self' https:;
+  frame-src 'self' https://challenges.cloudflare.com https:;
   object-src 'none';
   base-uri 'self';
 `.replace(/\n/g, '').replace(/\s{2,}/g, ' ').trim();
 // 🛡️ CSP 修复说明：
 // 1. 彻底移除了 script-src 中的 'unsafe-eval'，防范 eval() 恶意注入。
-// 2. 彻底移除了 script-src 中的 'https:' (原配置允许加载任何第三方站点的JS，导致 XSS 风险极高)。
+// 2. script-src 仅在 'self' 'unsafe-inline' 基础上精确白名单放行 https://challenges.cloudflare.com（用于 Cloudflare Turnstile 人机验证）。
 // 3. 新增 object-src 'none' 彻底封死 Flash/Java 等老旧高危插件。
 // 4. 新增 base-uri 'self' 防止被注入恶意 <base> 标签劫持相对路径。
 

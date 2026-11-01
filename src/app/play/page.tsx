@@ -2890,7 +2890,7 @@ function PlayPageClient() {
                     setShowDownloadSelector(true);
                   }}
                   className='ml-2.5 flex-shrink-0 p-1.5 rounded-lg text-gray-600 hover:text-green-500 dark:text-gray-300 dark:hover:text-green-400 hover:bg-green-500/10 transition-colors'
-                  title='视频下载面板'
+                  title='选择集数分片下载'
                 >
                   <Download className='h-6 w-6 stroke-[1.5]' />
                 </button>

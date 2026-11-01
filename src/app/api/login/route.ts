@@ -14,6 +14,11 @@ import {
 import { checkCsrf } from '@/lib/csrf-guard';
 import { db } from '@/lib/db';
 import { timingSafeEqual, verifyPasswordDummy } from '@/lib/password';
+import {
+  isTurnstileRequiredForScene,
+  resolveTurnstileConfig,
+  verifyTurnstileToken,
+} from '@/lib/turnstile';
 
 export const runtime = 'edge';
 
@@ -198,7 +203,7 @@ export async function POST(req: NextRequest) {
     if (!parsedBody.ok) {
       return NextResponse.json({ error: parsedBody.error }, { status: parsedBody.status });
     }
-    const { username, password } = parsedBody.data || {};
+    const { username, password, turnstileToken } = parsedBody.data || {};
 
     if (!username || typeof username !== 'string' || username.length > 64) {
       return NextResponse.json({ error: '用户名不能为空' }, { status: 400 });
@@ -208,6 +213,24 @@ export async function POST(req: NextRequest) {
     }
 
     const clientIp = getClientIp(req);
+    const config = await getConfig();
+
+    // Cloudflare Turnstile 登录环境人机验证
+    if (isTurnstileRequiredForScene(config, 'login')) {
+      const tc = resolveTurnstileConfig(config);
+      const turnstileRes = await verifyTurnstileToken({
+        token: turnstileToken,
+        secretKey: tc.SecretKey,
+        remoteIp: clientIp,
+      });
+      if (!turnstileRes.ok) {
+        return NextResponse.json(
+          { error: turnstileRes.error },
+          { status: 400 }
+        );
+      }
+    }
+
     if (
       !(await checkLoginAttemptLimits(
         username,
@@ -250,7 +273,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const config = await getConfig();
       const user = config.UserConfig.Users.find((u) => u.username === username);
       if (user && user.banned) {
         return NextResponse.json({ error: '用户被封禁' }, { status: 401 });

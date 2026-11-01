@@ -504,6 +504,7 @@ export async function resetConfig() {
     },
     ...(prevConfig?.GroupConfig ? { GroupConfig: prevConfig.GroupConfig } : {}),
     ...(prevConfig?.InviteConfig ? { InviteConfig: prevConfig.InviteConfig } : {}),
+    ...(prevConfig?.TurnstileConfig ? { TurnstileConfig: prevConfig.TurnstileConfig } : {}),
     SourceConfig: apiSiteEntries.map(([key, site]) => ({
       key,
       name: site.name,
@@ -528,6 +529,7 @@ export async function resetConfig() {
   cachedConfig.SourceConfig = adminConfig.SourceConfig;
   cachedConfig.GroupConfig = adminConfig.GroupConfig;
   cachedConfig.InviteConfig = adminConfig.InviteConfig;
+  cachedConfig.TurnstileConfig = adminConfig.TurnstileConfig;
   cachedConfig.configVersion = adminConfig.configVersion;
 }
 

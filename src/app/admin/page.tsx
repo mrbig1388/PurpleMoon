@@ -21,8 +21,17 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { ChevronDown, ChevronUp, Settings, Users, Video } from 'lucide-react';
-import { GripVertical } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  GripVertical,
+  Settings,
+  ShieldCheck,
+  Users,
+  Video,
+} from 'lucide-react';
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import Swal from 'sweetalert2';
 
@@ -2343,6 +2352,249 @@ const SiteConfigComponent = ({ config }: { config: AdminConfig | null }) => {
   );
 };
 
+// Cloudflare Turnstile 人机验证配置组件（仅站长）
+const TurnstileConfigComponent = ({
+  config,
+  refreshConfig,
+}: {
+  config: AdminConfig | null;
+  refreshConfig: () => Promise<void>;
+}) => {
+  const [enabled, setEnabled] = useState(false);
+  const [enableLogin, setEnableLogin] = useState(true);
+  const [enableRegister, setEnableRegister] = useState(true);
+  const [siteKey, setSiteKey] = useState('');
+  const [secretKey, setSecretKey] = useState('');
+  const [showSecretKey, setShowSecretKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const tc = config?.TurnstileConfig;
+    if (tc) {
+      setEnabled(Boolean(tc.Enabled));
+      setEnableLogin(typeof tc.EnableLogin === 'boolean' ? tc.EnableLogin : true);
+      setEnableRegister(
+        typeof tc.EnableRegister === 'boolean' ? tc.EnableRegister : true
+      );
+      setSiteKey(tc.SiteKey || '');
+      setSecretKey(tc.SecretKey || '');
+    } else {
+      setEnabled(false);
+      setEnableLogin(true);
+      setEnableRegister(true);
+      setSiteKey('');
+      setSecretKey('');
+    }
+  }, [config]);
+
+  const handleSave = async () => {
+    const cleanSiteKey = siteKey.trim();
+    const cleanSecretKey = secretKey.trim();
+
+    if (enabled && (!cleanSiteKey || !cleanSecretKey)) {
+      showError('启用人机验证前请填写完整的 Site Key 和 Secret Key');
+      return;
+    }
+
+    try {
+      setSaving(true);
+      const resp = await fetch('/api/admin/turnstile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          Enabled: enabled,
+          EnableLogin: enableLogin,
+          EnableRegister: enableRegister,
+          SiteKey: cleanSiteKey,
+          SecretKey: cleanSecretKey,
+        }),
+      });
+
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || `保存失败: ${resp.status}`);
+      }
+
+      if (typeof window !== 'undefined' && (window as any).RUNTIME_CONFIG) {
+        const ready =
+          enabled && cleanSiteKey.length > 0 && cleanSecretKey.length > 0;
+        (window as any).RUNTIME_CONFIG.TURNSTILE = {
+          enabled: ready,
+          enableLogin: ready && enableLogin,
+          enableRegister: ready && enableRegister,
+          siteKey: ready ? cleanSiteKey : '',
+        };
+      }
+
+      showSuccess('Cloudflare Turnstile 配置已保存');
+      await refreshConfig();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!config) {
+    return (
+      <div className='text-center text-gray-500 dark:text-gray-400'>
+        加载中...
+      </div>
+    );
+  }
+
+  const keysConfigured = siteKey.trim().length > 0 && secretKey.trim().length > 0;
+  const isActuallyActive = enabled && keysConfigured;
+
+  return (
+    <div className='space-y-6'>
+      {/* 顶部状态说明栏 */}
+      <div className='flex flex-wrap items-center justify-between gap-2 p-4 rounded-lg bg-gray-50 dark:bg-gray-900/60 border border-gray-200 dark:border-gray-700'>
+        <div>
+          <div className='flex items-center gap-2'>
+            <h4 className='text-sm font-semibold text-gray-900 dark:text-gray-100'>
+              启用 Cloudflare Turnstile 人机验证
+            </h4>
+            <span
+              className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                isActuallyActive
+                  ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                  : enabled
+                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
+                  : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+              }`}
+            >
+              {isActuallyActive
+                ? '运行中'
+                : enabled
+                ? '待填写密钥'
+                : '已关闭'}
+            </span>
+          </div>
+          <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+            开启后，可根据下方验证环境设置在登录或注册时要求通过 Cloudflare Turnstile 人机验证。
+          </p>
+        </div>
+        <label className='relative inline-flex items-center cursor-pointer select-none'>
+          <input
+            type='checkbox'
+            className='sr-only peer'
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+          />
+          <div className='w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[""] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600'></div>
+        </label>
+      </div>
+
+      {/* 验证环境配置（区分登录和注册） */}
+      <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 transition-opacity ${enabled ? '' : 'opacity-60'}`}>
+        <div className='flex items-center justify-between p-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/60'>
+          <div>
+            <h5 className='text-sm font-medium text-gray-800 dark:text-gray-200'>
+              登录环境需要验证
+            </h5>
+            <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+              开启后，用户登录账号前需完成 Turnstile 验证
+            </p>
+          </div>
+          <label className='relative inline-flex items-center cursor-pointer select-none'>
+            <input
+              type='checkbox'
+              className='sr-only peer'
+              checked={enableLogin}
+              onChange={(e) => setEnableLogin(e.target.checked)}
+            />
+            <div className='w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[""] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600'></div>
+          </label>
+        </div>
+
+        <div className='flex items-center justify-between p-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/60'>
+          <div>
+            <h5 className='text-sm font-medium text-gray-800 dark:text-gray-200'>
+              注册环境需要验证
+            </h5>
+            <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+              开启后，新用户注册账号前需完成 Turnstile 验证
+            </p>
+          </div>
+          <label className='relative inline-flex items-center cursor-pointer select-none'>
+            <input
+              type='checkbox'
+              className='sr-only peer'
+              checked={enableRegister}
+              onChange={(e) => setEnableRegister(e.target.checked)}
+            />
+            <div className='w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[""] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600'></div>
+          </label>
+        </div>
+      </div>
+
+      {/* Site Key 与 Secret Key 配置 */}
+      <div className='space-y-4'>
+        <div>
+          <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+            Cloudflare Turnstile Site Key
+          </label>
+          <input
+            type='text'
+            placeholder='请输入 Cloudflare Turnstile Site Key (例如: 0x4AAAAAA...)'
+            value={siteKey}
+            onChange={(e) => setSiteKey(e.target.value)}
+            autoComplete='off'
+            className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-green-500 focus:border-transparent font-mono text-sm'
+          />
+          <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+            用于登录/注册页面前端加载人机验证小部件的站点公钥。
+          </p>
+        </div>
+
+        <div>
+          <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+            Cloudflare Turnstile Secret Key
+          </label>
+          <div className='relative'>
+            <input
+              type={showSecretKey ? 'text' : 'password'}
+              placeholder='请输入 Cloudflare Turnstile Secret Key (例如: 0x4AAAAAA...)'
+              value={secretKey}
+              onChange={(e) => setSecretKey(e.target.value)}
+              autoComplete='new-password'
+              className='w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-green-500 focus:border-transparent font-mono text-sm'
+            />
+            <button
+              type='button'
+              onClick={() => setShowSecretKey((prev) => !prev)}
+              className='absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors'
+              aria-label={showSecretKey ? '隐藏密钥' : '显示密钥'}
+            >
+              {showSecretKey ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+            用于服务端向 Cloudflare 校验验证结果的私密密钥（仅站长可见，绝不会下发到普通客户端）。
+          </p>
+        </div>
+      </div>
+
+      {/* 保存按钮 */}
+      <div className='flex justify-end'>
+        <button
+          type='button'
+          onClick={handleSave}
+          disabled={saving}
+          className={`px-4 py-2 ${
+            saving
+              ? 'bg-gray-400 cursor-not-allowed'
+              : 'bg-green-600 hover:bg-green-700'
+          } text-white rounded-lg transition-colors`}
+        >
+          {saving ? '保存中…' : '保存人机验证配置'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 function AdminPageClient() {
   const [config, setConfig] = useState<AdminConfig | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2351,6 +2603,7 @@ function AdminPageClient() {
   const [expandedTabs, setExpandedTabs] = useState<{ [key: string]: boolean }>({
     userConfig: false,
     groupConfig: false,
+    turnstileConfig: false,
     videoSource: false,
     siteConfig: false,
   });
@@ -2516,6 +2769,26 @@ function AdminPageClient() {
                 onToggle={() => toggleTab('groupConfig')}
               >
                 <GroupPermissionConfig config={config} refreshConfig={fetchConfig} />
+              </CollapsibleTab>
+            )}
+
+            {/* Cloudflare Turnstile 人机验证配置标签（仅站长） */}
+            {role === 'owner' && (
+              <CollapsibleTab
+                title='Cloudflare Turnstile 人机验证'
+                icon={
+                  <ShieldCheck
+                    size={20}
+                    className='text-gray-600 dark:text-gray-400'
+                  />
+                }
+                isExpanded={expandedTabs.turnstileConfig}
+                onToggle={() => toggleTab('turnstileConfig')}
+              >
+                <TurnstileConfigComponent
+                  config={config}
+                  refreshConfig={fetchConfig}
+                />
               </CollapsibleTab>
             )}
 

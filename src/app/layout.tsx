@@ -5,6 +5,7 @@ import 'sweetalert2/dist/sweetalert2.min.css';
 
 import { getConfig } from '@/lib/config';
 import { isInviteCodeRequired } from '@/lib/invite';
+import { getPublicTurnstileConfig, PublicTurnstileState } from '@/lib/turnstile';
 
 import { SiteProvider } from '../components/SiteProvider';
 import { ThemeProvider } from '../components/ThemeProvider';
@@ -55,6 +56,7 @@ export default async function RootLayout({
   let enableRegister = process.env.NEXT_PUBLIC_ENABLE_REGISTER === 'true';
   let requireInviteCode = isInviteCodeRequired();
   let imageProxy = process.env.NEXT_PUBLIC_IMAGE_PROXY || '';
+  let turnstile: PublicTurnstileState = getPublicTurnstileConfig(null);
 
   // 🛡️ 逻辑修复 (LOG-02)：运行时在所有存储模式（含 d1 / upstash）下均读取最新配置，
   // 用 try/catch 保护静态构建阶段，确保后台修改开放注册、邀请码开关、站点名、公告或图片代理后全局生效。
@@ -67,6 +69,7 @@ export default async function RootLayout({
         enableRegister = Boolean(config.UserConfig.AllowRegister);
         requireInviteCode = isInviteCodeRequired(config);
         imageProxy = config.SiteConfig.ImageProxy ?? imageProxy;
+        turnstile = getPublicTurnstileConfig(config);
       }
     } catch {
       // 存储暂不可用时回退至环境变量默认值
@@ -78,6 +81,7 @@ export default async function RootLayout({
     ENABLE_REGISTER: enableRegister,
     REQUIRE_INVITE_CODE: requireInviteCode,
     IMAGE_PROXY: imageProxy,
+    TURNSTILE: turnstile,
   };
 
   return (

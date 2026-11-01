@@ -58,14 +58,19 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 🛡️ 越权防护：邀请码可绑定高权限分组（如 A 组），仅站长（owner）可读取 InviteConfig，
-    // 防止受限管理员通过读取高权限分组邀请码自助注册新号提权。
+    // 🛡️ 越权防护：邀请码与 Turnstile 密钥仅站长（owner）可读取
     const sanitizedConfig = {
       ...config,
       SourceConfig: visibleSourceConfig,
       ...(role === 'owner'
-        ? { InviteConfig: config.InviteConfig }
-        : { InviteConfig: undefined }),
+        ? {
+            InviteConfig: config.InviteConfig,
+            TurnstileConfig: config.TurnstileConfig,
+          }
+        : {
+            InviteConfig: undefined,
+            TurnstileConfig: undefined,
+          }),
     };
 
     const result: AdminConfigResult = {

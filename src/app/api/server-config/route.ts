@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
 import { isInviteCodeRequired } from '@/lib/invite';
+import { getPublicTurnstileConfig } from '@/lib/turnstile';
 
 export const runtime = 'edge';
 
@@ -16,6 +17,7 @@ export async function GET(request: NextRequest) {
     StorageType: process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage',
     AllowRegister: Boolean(config.UserConfig?.AllowRegister),
     RequireInviteCode: isInviteCodeRequired(config),
+    Turnstile: getPublicTurnstileConfig(config),
   };
   return NextResponse.json(result, {
     headers: { 'Cache-Control': 'no-store' },

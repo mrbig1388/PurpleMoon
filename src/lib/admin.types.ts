@@ -28,6 +28,20 @@ export interface InviteCodeItem {
   note?: string;
 }
 
+/** Cloudflare Turnstile 人机验证配置（仅站长可查看与管理） */
+export interface TurnstileConfig {
+  /** 是否启用 Cloudflare Turnstile 人机验证总开关 */
+  Enabled: boolean;
+  /** 登录环境是否需要人机验证 */
+  EnableLogin: boolean;
+  /** 注册环境是否需要人机验证 */
+  EnableRegister: boolean;
+  /** Cloudflare Turnstile Site Key（前端公钥） */
+  SiteKey: string;
+  /** Cloudflare Turnstile Secret Key（服务端密钥） */
+  SecretKey: string;
+}
+
 export interface AdminConfig {
   configVersion?: number;
   SiteConfig: {
@@ -71,6 +85,10 @@ export interface AdminConfig {
     RequireInviteCode: boolean;
     Codes: InviteCodeItem[];
   };
+  /**
+   * Cloudflare Turnstile 人机验证配置（仅站长可查看与管理）。
+   */
+  TurnstileConfig?: TurnstileConfig;
   SourceConfig: {
     key: string;
     name: string;
