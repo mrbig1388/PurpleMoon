@@ -25,6 +25,8 @@ const D = '#EXT-X-DISCONTINUITY\n';
 const END = '#EXT-X-ENDLIST\n';
 const uris = (s: string) => s.split(/\r?\n/).filter((l) => l && !l.startsWith('#'));
 const count = (s: string, t: string) => s.split(t).length - 1;
+const fixture = (n: string) =>
+  fs.readFileSync(path.join(__dirname, 'fixtures', `${n}.m3u8`), 'utf8');
 
 describe('filterAdsFromM3U8', () => {
   it('T01 开头广告', () => {
@@ -185,7 +187,6 @@ describe('filterAdsFromM3U8', () => {
   });
 
   // ---- 真实播放列表回归（用户抓取：如意 / 爱奇艺 / 电影天堂 / iKun） ----
-  const fixture = (n: string) => fs.readFileSync(path.join(__dirname, 'fixtures', `${n}.m3u8`), 'utf8');
   const removedUris = (orig: string, out: string) => {
     const keep = new Set(uris(out));
     return uris(orig).filter((u) => !keep.has(u));
@@ -529,7 +530,7 @@ describe('广告指纹与结构规则', () => {
 
     const parsed = readFirstTsPtsSeconds(buildTsBufferWithPts(500.17));
     expect(parsed).not.toBeNull();
-    expect(parsed!).toBeCloseTo(500.17, 2);
+    expect(parsed ?? 0).toBeCloseTo(500.17, 2);
 
     // 模拟 19 分钟（285 片 × 4s = 1140s）流在 9 分钟（第 135 片，540s）处内部 PTS 归零重置为 0s
     const frags = Array.from({ length: 285 }, (_, i) => ({
