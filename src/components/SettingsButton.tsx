@@ -8,10 +8,6 @@ import { createPortal } from 'react-dom';
 
 export const SettingsButton: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
-  const [defaultAggregateSearch, setDefaultAggregateSearch] = useState(true);
-  const [exactSearch, setExactSearch] = useState(true);
-  const [cardDisplayMode, setCardDisplayMode] = useState(true);
-  const [enableStreamSearch, setEnableStreamSearch] = useState(true);
   const [imageProxyUrl, setImageProxyUrl] = useState('');
   const [enableOptimization, setEnableOptimization] = useState(true);
   const [enableImageProxy, setEnableImageProxy] = useState(false);
@@ -25,48 +21,6 @@ export const SettingsButton: React.FC = () => {
   // 从 localStorage 读取设置
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const savedAggregateSearch = localStorage.getItem(
-        'defaultAggregateSearch'
-      );
-      if (savedAggregateSearch !== null) {
-        try {
-          setDefaultAggregateSearch(JSON.parse(savedAggregateSearch));
-        } catch {
-          setDefaultAggregateSearch(savedAggregateSearch === 'true');
-        }
-      }
-
-      const savedExactSearch = localStorage.getItem('exactSearch');
-      if (savedExactSearch !== null) {
-        try {
-          const parsed = JSON.parse(savedExactSearch);
-          if (typeof parsed === 'boolean') {
-            setExactSearch(parsed);
-          } else {
-            setExactSearch(savedExactSearch === 'true');
-          }
-        } catch {
-          setExactSearch(savedExactSearch === 'true');
-        }
-      }
-
-      const savedDisplayMode = localStorage.getItem('searchResultDisplayMode');
-      if (savedDisplayMode === 'list') {
-        setCardDisplayMode(false);
-      } else if (savedDisplayMode === 'card') {
-        setCardDisplayMode(true);
-      }
-
-      const savedStreamSearch = localStorage.getItem('enableStreamSearch');
-      if (savedStreamSearch !== null) {
-        try {
-          const parsed = JSON.parse(savedStreamSearch);
-          if (typeof parsed === 'boolean') setEnableStreamSearch(parsed);
-        } catch {
-          // 值损坏时保持默认（开启）
-        }
-      }
-
       const savedEnableImageProxy = localStorage.getItem('enableImageProxy');
       const defaultImageProxy =
         (window as any).RUNTIME_CONFIG?.IMAGE_PROXY || '';
@@ -91,56 +45,6 @@ export const SettingsButton: React.FC = () => {
       }
     }
   }, []);
-
-  // 保存设置到 localStorage
-  const handleAggregateToggle = (value: boolean) => {
-    setDefaultAggregateSearch(value);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('defaultAggregateSearch', JSON.stringify(value));
-      window.dispatchEvent(
-        new CustomEvent('localSettingsChanged', {
-          detail: { defaultAggregateSearch: value },
-        })
-      );
-    }
-  };
-
-  const handleExactSearchToggle = (value: boolean) => {
-    setExactSearch(value);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('exactSearch', JSON.stringify(value));
-      window.dispatchEvent(
-        new CustomEvent('localSettingsChanged', {
-          detail: { exactSearch: value },
-        })
-      );
-    }
-  };
-
-  const handleCardDisplayModeToggle = (value: boolean) => {
-    setCardDisplayMode(value);
-    const mode = value ? 'card' : 'list';
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('searchResultDisplayMode', mode);
-      window.dispatchEvent(
-        new CustomEvent('localSettingsChanged', {
-          detail: { searchResultDisplayMode: mode },
-        })
-      );
-    }
-  };
-
-  const handleStreamSearchToggle = (value: boolean) => {
-    setEnableStreamSearch(value);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('enableStreamSearch', JSON.stringify(value));
-      window.dispatchEvent(
-        new CustomEvent('localSettingsChanged', {
-          detail: { enableStreamSearch: value },
-        })
-      );
-    }
-  };
 
   const handleImageProxyUrlChange = (value: string) => {
     setImageProxyUrl(value);
@@ -175,21 +79,13 @@ export const SettingsButton: React.FC = () => {
   const handleResetSettings = () => {
     const defaultImageProxy = (window as any).RUNTIME_CONFIG?.IMAGE_PROXY || '';
 
-    // 重置所有状态
-    setDefaultAggregateSearch(true);
-    setExactSearch(true);
-    setCardDisplayMode(true);
-    setEnableStreamSearch(true);
+    // 重置状态
     setEnableOptimization(true);
     setEnableImageProxy(!!defaultImageProxy);
     setImageProxyUrl(defaultImageProxy);
 
     // 保存到 localStorage
     if (typeof window !== 'undefined') {
-      localStorage.setItem('defaultAggregateSearch', JSON.stringify(true));
-      localStorage.setItem('exactSearch', JSON.stringify(true));
-      localStorage.setItem('searchResultDisplayMode', 'card');
-      localStorage.setItem('enableStreamSearch', JSON.stringify(true));
       localStorage.setItem('enableOptimization', JSON.stringify(true));
       localStorage.setItem('doubanProxyUrl', '');
       localStorage.setItem(
@@ -197,16 +93,6 @@ export const SettingsButton: React.FC = () => {
         JSON.stringify(!!defaultImageProxy)
       );
       localStorage.setItem('imageProxyUrl', defaultImageProxy);
-      window.dispatchEvent(
-        new CustomEvent('localSettingsChanged', {
-          detail: {
-            defaultAggregateSearch: true,
-            exactSearch: true,
-            searchResultDisplayMode: 'card',
-            enableStreamSearch: true,
-          },
-        })
-      );
     }
   };
 
@@ -246,104 +132,6 @@ export const SettingsButton: React.FC = () => {
 
         {/* 设置项 */}
         <div className='space-y-6'>
-          {/* 默认聚合搜索结果 */}
-          <div className='flex items-center justify-between'>
-            <div>
-              <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-                默认聚合搜索结果
-              </h4>
-              <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-                搜索时默认按标题和年份聚合显示结果
-              </p>
-            </div>
-            <label className='flex items-center cursor-pointer'>
-              <div className='relative'>
-                <input
-                  type='checkbox'
-                  className='sr-only peer'
-                  checked={defaultAggregateSearch}
-                  onChange={(e) => handleAggregateToggle(e.target.checked)}
-                />
-                <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
-                <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
-              </div>
-            </label>
-          </div>
-
-          {/* 精确搜索 */}
-          <div className='flex items-center justify-between'>
-            <div>
-              <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-                精确搜索
-              </h4>
-              <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-                开启后，搜索结果将过滤掉不包含搜索词的内容
-              </p>
-            </div>
-            <label className='flex items-center cursor-pointer'>
-              <div className='relative'>
-                <input
-                  type='checkbox'
-                  className='sr-only peer'
-                  checked={exactSearch}
-                  onChange={(e) => handleExactSearchToggle(e.target.checked)}
-                />
-                <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
-                <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
-              </div>
-            </label>
-          </div>
-
-          {/* 搜索结果显示方式（卡片 / 列表） */}
-          <div className='flex items-center justify-between'>
-            <div>
-              <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-                搜索结果卡片显示
-              </h4>
-              <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-                默认开启为卡片显示，关闭为列表显示
-              </p>
-            </div>
-            <label className='flex items-center cursor-pointer'>
-              <div className='relative'>
-                <input
-                  type='checkbox'
-                  className='sr-only peer'
-                  checked={cardDisplayMode}
-                  onChange={(e) =>
-                    handleCardDisplayModeToggle(e.target.checked)
-                  }
-                />
-                <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
-                <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
-              </div>
-            </label>
-          </div>
-
-          {/* 流式搜索 */}
-          <div className='flex items-center justify-between'>
-            <div>
-              <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-                流式搜索
-              </h4>
-              <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-                开启：边搜边显示，流式不可用时自动改用普通搜索；关闭：直接使用普通搜索，等全部搜完再显示
-              </p>
-            </div>
-            <label className='flex items-center cursor-pointer'>
-              <div className='relative'>
-                <input
-                  type='checkbox'
-                  className='sr-only peer'
-                  checked={enableStreamSearch}
-                  onChange={(e) => handleStreamSearchToggle(e.target.checked)}
-                />
-                <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
-                <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
-              </div>
-            </label>
-          </div>
-
           {/* 优选和测速 */}
           <div className='flex items-center justify-between'>
             <div>
