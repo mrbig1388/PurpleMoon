@@ -26,16 +26,11 @@ import {
   saveSkipConfig,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
-import { useDownloadActions } from '@/lib/Download/DownloadContext';
+import { useDownload } from '@/lib/Download/DownloadContext';
 import DownloadEpisodeSelector from '@/lib/Download/DownloadEpisodeSelector';
 import {
-  createPtsTracker,
   filterAdsFromM3U8,
-  inspectFragmentPts,
-  readFirstTsPtsSeconds,
   stripDiscontinuityLegacy,
-  TsFragmentLike,
-  TsPtsTracker,
 } from '@/lib/m3u8-ad-filter';
 import { SearchResult } from '@/lib/types';
 import {
@@ -403,7 +398,7 @@ function PlayPageClient() {
   const [isEpisodeSelectorCollapsed, setIsEpisodeSelectorCollapsed] =
     useState(false);
   const [showDownloadSelector, setShowDownloadSelector] = useState(false);
-  const { addDownloadTask, setShowDownloadPanel } = useDownloadActions();
+  const { addDownloadTask, setShowDownloadPanel } = useDownload();
 
   const handleDownloadEpisodes = useCallback(
     async (episodeIndexes: number[]) => {
@@ -878,9 +873,6 @@ function PlayPageClient() {
     }
   };
 
-  const tsPtsTrackerRef = useRef<TsPtsTracker>(createPtsTracker());
-  const activeLevelFragmentsRef = useRef<TsFragmentLike[] | null>(null);
-
   class CustomHlsJsLoader extends Hls.DefaultConfig.loader {
     constructor(config: any) {
       super(config);
@@ -894,8 +886,7 @@ function PlayPageClient() {
           callbacks.onSuccess = function (
             response: any,
             stats: any,
-            context: any,
-            networkDetails: any
+            context: any
           ) {
             if (response.data && typeof response.data === 'string') {
               try {
@@ -929,50 +920,18 @@ function PlayPageClient() {
                     url: context?.url,
                     ...r,
                     content: undefined,
-                    cleanContent: undefined,
                   };
                 } catch {
                   // ignore
                 }
-                // 使用 cleanContent：清除正片内部的伪周期性 #EXT-X-DISCONTINUITY 标记（如如意/电影天堂每 5 片插入一次的分块标记），
-                // 同时保留被删广告段切口处的真实 #EXT-X-DISCONTINUITY 标记，防止跨切口 PTS 跳变导致总时长缩水（如 19 分骤变为 9 分）
-                response.data =
-                  r.cleanContent ?? stripDiscontinuityLegacy(r.content);
+                // 先执行广告分片识别与过滤，再统一清除剩余的 #EXT-X-DISCONTINUITY 标记，
+                // 防止定长分块源（每 5 片 / 约 10s 插入一次伪 DISCONTINUITY）触发 Hls.js 周期性重置 timestampOffset 导致 0.2s 跳帧卡顿
+                response.data = stripDiscontinuityLegacy(r.content);
               } catch {
                 response.data = stripDiscontinuityLegacy(response.data);
               }
             }
-            return onSuccess(response, stats, context, networkDetails);
-          };
-        } else if ((context as any)?.frag) {
-          const onSuccess = callbacks.onSuccess;
-          callbacks.onSuccess = function (
-            response: any,
-            stats: any,
-            context: any,
-            networkDetails: any
-          ) {
-            try {
-              if (
-                response?.data instanceof ArrayBuffer &&
-                response.data.byteLength >= 564
-              ) {
-                const rawPts = readFirstTsPtsSeconds(
-                  new Uint8Array(response.data)
-                );
-                if (rawPts !== null) {
-                  inspectFragmentPts(
-                    tsPtsTrackerRef.current,
-                    context?.frag,
-                    rawPts,
-                    activeLevelFragmentsRef.current
-                  );
-                }
-              }
-            } catch {
-              // ignore runtime PTS inspection errors
-            }
-            return onSuccess(response, stats, context, networkDetails);
+            return onSuccess(response, stats, context, null);
           };
         }
         load(context, config, callbacks);
@@ -989,8 +948,6 @@ function PlayPageClient() {
     if (!video || !url) return;
     isLoadingNewStreamRef.current = true;
     hasHandledCanPlayRef.current = false;
-    tsPtsTrackerRef.current = createPtsTracker();
-    activeLevelFragmentsRef.current = null;
 
     if (video.hls) {
       try {
@@ -1045,11 +1002,6 @@ function PlayPageClient() {
         maxMaxBufferLength: 120,
         backBufferLength: 30,
         maxBufferSize: 100 * 1000 * 1000,
-        // 消除定长分块源（如每 5 片 / 约 15-20s 一块）分片交界处因音频帧微差触发静音帧注入/丢帧导致的声音卡顿
-        maxBufferHole: 0.5,
-        maxAudioFramesDrift: 8,
-        stretchShortVideoTrack: true,
-        maxFragLookUpTolerance: 0.25,
         loader: blockAdEnabledRef.current
           ? CustomHlsJsLoader
           : Hls.DefaultConfig.loader,
@@ -1059,12 +1011,6 @@ function PlayPageClient() {
       }
 
       const hls = new Hls(hlsConfig);
-
-      hls.on(Hls.Events.LEVEL_LOADED, (_event: any, data: any) => {
-        if (data?.details?.fragments) {
-          activeLevelFragmentsRef.current = data.details.fragments;
-        }
-      });
 
       hls.loadSource(url);
       hls.attachMedia(video);
