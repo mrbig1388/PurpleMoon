@@ -31,6 +31,12 @@ export interface AdFilterOptions {
 
 export interface AdFilterResult {
   content: string;
+  /**
+   * 面向 HLS.js 播放器的净化后列表：
+   * 清除正片内部的伪周期性 #EXT-X-DISCONTINUITY 标记（如如意/电影天堂每 5 片插入一次的分块标记，防止周期性音视频重置卡顿），
+   * 同时严格保留被删广告段切口处的真实 #EXT-X-DISCONTINUITY 标记（防止跨切口 PTS 跳变/归零导致总时长由 19 分钟缩水为 9 分钟或后半段分片丢失）。
+   */
+  cleanContent: string;
   removedSegments: number;
   removedSeconds: number;
   /** 命中的识别方式，便于调试：signature / fingerprint / B / D / E / F */
@@ -276,6 +282,7 @@ export function filterAdsFromM3U8(
 ): AdFilterResult {
   const passthrough = (reason: string): AdFilterResult => ({
     content: m3u8Content || '',
+    cleanContent: stripDiscontinuityLegacy(m3u8Content || ''),
     removedSegments: 0,
     removedSeconds: 0,
     skippedReason: reason,
@@ -585,36 +592,55 @@ export function filterAdsFromM3U8(
 
     // ---- 重建（按分片）----
     const out: string[] = [...header];
+    const cleanOut: string[] = [
+      ...header.filter((l) => !l.includes('#EXT-X-DISCONTINUITY')),
+    ];
     let emittedKey: string | null = null;
     let emittedMap: string | null = null;
     let carryDisc = false;
+    let removedSinceLastKept = false;
     let firstOut = true;
     segs.forEach((s, i) => {
       if (mask[i]) {
         if (s.discontinuityBefore) carryDisc = true;
+        if (!firstOut) removedSinceLastKept = true;
         return;
       }
       const needDisc = (s.discontinuityBefore || carryDisc) && !firstOut;
+      const needCleanDisc = removedSinceLastKept && !firstOut;
       carryDisc = false;
+      removedSinceLastKept = false;
       if (needDisc) out.push('#EXT-X-DISCONTINUITY');
+      if (needCleanDisc) cleanOut.push('#EXT-X-DISCONTINUITY');
       const ownKey = s.lines.some((l) => l.startsWith('#EXT-X-KEY'));
       const ownMap = s.lines.some((l) => l.startsWith('#EXT-X-MAP'));
       // 被删分片里声明的 KEY/MAP 需要补回，否则后面的分片会解不开
-      if (!ownKey && segKey[i] && segKey[i] !== emittedKey) out.push(segKey[i] as string);
-      if (!ownMap && segMap[i] && segMap[i] !== emittedMap) out.push(segMap[i] as string);
+      if (!ownKey && segKey[i] && segKey[i] !== emittedKey) {
+        out.push(segKey[i] as string);
+        cleanOut.push(segKey[i] as string);
+      }
+      if (!ownMap && segMap[i] && segMap[i] !== emittedMap) {
+        out.push(segMap[i] as string);
+        cleanOut.push(segMap[i] as string);
+      }
       s.lines.forEach((l) => {
         if (l.startsWith('#EXT-X-KEY')) emittedKey = l;
         if (l.startsWith('#EXT-X-MAP')) emittedMap = l;
         out.push(l);
+        if (!l.includes('#EXT-X-DISCONTINUITY')) {
+          cleanOut.push(l);
+        }
       });
       if (!ownKey && segKey[i]) emittedKey = segKey[i];
       if (!ownMap && segMap[i]) emittedMap = segMap[i];
       firstOut = false;
     });
     out.push(...footer);
+    cleanOut.push(...footer);
 
     return {
       content: out.join(eol) + eol,
+      cleanContent: cleanOut.join(eol) + eol,
       removedSegments,
       removedSeconds,
       method: methods.join(','),
@@ -641,4 +667,178 @@ export function stripDiscontinuityLegacy(m3u8Content: string): string {
     }
   }
   return filteredLines.join('\n');
+}
+
+export interface TsFragmentLike {
+  sn: number | string;
+  start: number;
+  duration: number;
+  cc: number;
+}
+
+export interface TsPtsTracker {
+  lastSn: number | null;
+  lastCc: number | null;
+  lastRawPts: number | null;
+  lastDuration: number;
+  ccOffset: number;
+  appliedOffsetBySn: Map<number, number>;
+  ccDomains: Map<number, { baseRawPts: number; baseFragStart: number }>;
+}
+
+export function createPtsTracker(): TsPtsTracker {
+  return {
+    lastSn: null,
+    lastCc: null,
+    lastRawPts: null,
+    lastDuration: 0,
+    ccOffset: 0,
+    appliedOffsetBySn: new Map(),
+    ccDomains: new Map(),
+  };
+}
+
+/**
+ * 从未加密的 MPEG-TS (.ts) 分片二进制头部快速提取首个视频/音频 PES 包的 33-bit PTS（单位：秒）。
+ * 仅扫描前 250 个 TS 包（约 47KB），耗时 < 0.02ms；若为 AES-128 加密分片或 fMP4 则立即返回 null。
+ */
+export function readFirstTsPtsSeconds(data?: Uint8Array | null): number | null {
+  if (!data || data.length < 564) return null;
+
+  let syncOffset = -1;
+  const maxSearch = Math.min(data.length - 376, 1024);
+  for (let i = 0; i < maxSearch; i++) {
+    if (data[i] === 0x47 && data[i + 188] === 0x47 && data[i + 376] === 0x47) {
+      syncOffset = i;
+      break;
+    }
+  }
+  if (syncOffset < 0) return null;
+
+  const maxPackets = 250;
+  let packetsChecked = 0;
+  let fallbackAudioPts: number | null = null;
+
+  for (
+    let pos = syncOffset;
+    pos + 188 <= data.length && packetsChecked < maxPackets;
+    pos += 188, packetsChecked++
+  ) {
+    if (data[pos] !== 0x47) break;
+    const pusi = (data[pos + 1] & 0x40) !== 0;
+    if (!pusi) continue;
+    const pid = ((data[pos + 1] & 0x1f) << 8) | data[pos + 2];
+    // 跳过 PAT / CAT / SDT / 空包
+    if (pid === 0 || pid === 1 || pid === 0x11 || pid === 0x1fff) continue;
+
+    const afc = (data[pos + 3] >> 4) & 0x03;
+    if ((afc & 0x01) === 0) continue;
+    let payloadOffset = pos + 4;
+    if ((afc & 0x02) !== 0) {
+      payloadOffset += 1 + data[pos + 4];
+    }
+    if (payloadOffset + 14 > pos + 188) continue;
+
+    if (
+      data[payloadOffset] === 0x00 &&
+      data[payloadOffset + 1] === 0x00 &&
+      data[payloadOffset + 2] === 0x01
+    ) {
+      const streamId = data[payloadOffset + 3];
+      const isVideo = streamId >= 0xe0 && streamId <= 0xef;
+      const isAudio = streamId >= 0xc0 && streamId <= 0xdf;
+      if (!isVideo && !isAudio) continue;
+
+      const ptsDtsFlags = (data[payloadOffset + 7] >> 6) & 0x03;
+      if (ptsDtsFlags === 2 || ptsDtsFlags === 3) {
+        const p = payloadOffset + 9;
+        const pts =
+          (data[p] & 0x0e) * 536870912 +
+          (data[p + 1] & 0xff) * 4194304 +
+          ((data[p + 2] & 0xfe) << 14) +
+          ((data[p + 3] & 0xff) << 7) +
+          ((data[p + 4] & 0xfe) >>> 1);
+        const ptsSec = pts / 90000;
+        if (isVideo) return ptsSec;
+        if (fallbackAudioPts === null) fallbackAudioPts = ptsSec;
+      }
+    }
+  }
+  return fallbackAudioPts;
+}
+
+/**
+ * 运行时分片 PTS 跳变检测与连续性计数器（cc）动态修正：
+ * 当去除了伪 #EXT-X-DISCONTINUITY 标记后，若某处分片（例如约 9 分钟处的分段压制切口或漏网插播段）
+ * 内部 MPEG-TS PTS 发生跳变/归零（如从 540s 突变为 0s），在交给 Hls.js 解复用前动态递增该分片及后续分片的 cc，
+ * 确保 Hls.js 重新对齐 timestampOffset = frag.start，杜绝 updateFragPTSDTS 将后半段回移导致 19 分钟进度条骤缩为 9 分钟。
+ */
+export function inspectFragmentPts(
+  tracker: TsPtsTracker,
+  frag: TsFragmentLike | null | undefined,
+  rawPts: number | null,
+  levelFrags?: TsFragmentLike[] | null
+): boolean {
+  if (rawPts === null || !frag || typeof frag.sn !== 'number') return false;
+
+  const prevApplied = tracker.appliedOffsetBySn.get(frag.sn) || 0;
+  if (tracker.ccOffset > prevApplied) {
+    frag.cc += tracker.ccOffset - prevApplied;
+    tracker.appliedOffsetBySn.set(frag.sn, tracker.ccOffset);
+  }
+
+  let needNewDiscontinuity = false;
+
+  if (
+    tracker.lastSn !== null &&
+    frag.sn === tracker.lastSn + 1 &&
+    tracker.lastRawPts !== null &&
+    frag.cc === tracker.lastCc
+  ) {
+    const expectedRawPts = tracker.lastRawPts + tracker.lastDuration;
+    if (Math.abs(rawPts - expectedRawPts) > 3.0) {
+      needNewDiscontinuity = true;
+    }
+  } else {
+    const domain = tracker.ccDomains.get(frag.cc);
+    if (domain && frag.cc === tracker.lastCc) {
+      const expectedRawPts =
+        domain.baseRawPts + ((frag.start || 0) - domain.baseFragStart);
+      if (Math.abs(rawPts - expectedRawPts) > 6.0) {
+        needNewDiscontinuity = true;
+      }
+    }
+  }
+
+  if (needNewDiscontinuity) {
+    tracker.ccOffset += 1;
+    frag.cc += 1;
+    tracker.appliedOffsetBySn.set(frag.sn, tracker.ccOffset);
+    if (Array.isArray(levelFrags)) {
+      for (let i = 0; i < levelFrags.length; i++) {
+        const lf = levelFrags[i];
+        if (lf && typeof lf.sn === 'number' && lf.sn > frag.sn) {
+          const lfApplied = tracker.appliedOffsetBySn.get(lf.sn) || 0;
+          if (tracker.ccOffset > lfApplied) {
+            lf.cc += tracker.ccOffset - lfApplied;
+            tracker.appliedOffsetBySn.set(lf.sn, tracker.ccOffset);
+          }
+        }
+      }
+    }
+  }
+
+  if (!tracker.ccDomains.has(frag.cc)) {
+    tracker.ccDomains.set(frag.cc, {
+      baseRawPts: rawPts,
+      baseFragStart: frag.start || 0,
+    });
+  }
+
+  tracker.lastSn = frag.sn;
+  tracker.lastCc = frag.cc;
+  tracker.lastRawPts = rawPts;
+  tracker.lastDuration = frag.duration || 0;
+
+  return needNewDiscontinuity;
 }

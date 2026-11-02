@@ -6,6 +6,8 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
+  useRef,
   useState,
 } from 'react';
 
@@ -43,9 +45,18 @@ interface DownloadContextType {
   setShowDownloadPanel: (show: boolean) => void;
 }
 
+interface DownloadActionsContextType {
+  addDownloadTask: DownloadContextType['addDownloadTask'];
+  setShowDownloadPanel: (show: boolean) => void;
+}
+
 const DownloadContext = createContext<DownloadContextType | undefined>(
   undefined
 );
+
+const DownloadActionsContext = createContext<
+  DownloadActionsContextType | undefined
+>(undefined);
 
 export function DownloadProvider({ children }: { children: React.ReactNode }) {
   const [tasks, setTasks] = useState<M3U8DownloadTask[]>([]);
@@ -55,6 +66,11 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     message: string;
     type: 'success' | 'error' | 'info';
   } | null>(null);
+
+  const lastUiSyncRef = useRef<number>(0);
+  const uiSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastDbSaveRef = useRef<number>(0);
+  const dbSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const startNextPendingTask = useCallback(
     (currentDownloader: M3U8Downloader) => {
@@ -107,7 +123,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
           rangeDownload: task.rangeDownload,
           m3u8Content: task.m3u8Content,
           createdAt: task.createdAt || Date.now(),
-          segmentLogs: task.segmentLogs,
+          segmentLogs: (task.segmentLogs || []).slice(-100),
         }));
 
       await downloadDB.saveActiveTasks(tasksToSave);
@@ -120,11 +136,38 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     () =>
       new M3U8Downloader({
         onProgress: () => {
-          const current = downloader.getAllTasks();
-          setTasks([...current]);
-          saveTasks(current);
+          const now = Date.now();
+          if (now - lastUiSyncRef.current >= 250) {
+            lastUiSyncRef.current = now;
+            setTasks([...downloader.getAllTasks()]);
+          } else if (!uiSyncTimerRef.current) {
+            uiSyncTimerRef.current = setTimeout(() => {
+              uiSyncTimerRef.current = null;
+              lastUiSyncRef.current = Date.now();
+              setTasks([...downloader.getAllTasks()]);
+            }, 250);
+          }
+
+          if (now - lastDbSaveRef.current >= 3000) {
+            lastDbSaveRef.current = now;
+            saveTasks(downloader.getAllTasks());
+          } else if (!dbSaveTimerRef.current) {
+            dbSaveTimerRef.current = setTimeout(() => {
+              dbSaveTimerRef.current = null;
+              lastDbSaveRef.current = Date.now();
+              saveTasks(downloader.getAllTasks());
+            }, 3000);
+          }
         },
         onComplete: async (task) => {
+          if (uiSyncTimerRef.current) {
+            clearTimeout(uiSyncTimerRef.current);
+            uiSyncTimerRef.current = null;
+          }
+          if (dbSaveTimerRef.current) {
+            clearTimeout(dbSaveTimerRef.current);
+            dbSaveTimerRef.current = null;
+          }
           const current = downloader.getAllTasks();
           setTasks([...current]);
 
@@ -220,6 +263,13 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       })
   );
 
+  useEffect(() => {
+    return () => {
+      if (uiSyncTimerRef.current) clearTimeout(uiSyncTimerRef.current);
+      if (dbSaveTimerRef.current) clearTimeout(dbSaveTimerRef.current);
+    };
+  }, []);
+
   // 从 IndexedDB 恢复未完成的任务
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -305,7 +355,10 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
           await downloadDB.deleteActiveTasks(tasksToDelete);
         }
 
-        setTasks([...downloader.getAllTasks()]);
+        const restored = downloader.getAllTasks();
+        if (restored.length > 0) {
+          setTasks([...restored]);
+        }
       } catch (error) {
         console.error('恢复任务失败:', error);
       }
@@ -455,9 +508,10 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     (taskId: string) => {
       downloader.pauseTask(taskId);
       setTasks([...downloader.getAllTasks()]);
+      saveTasks(downloader.getAllTasks());
       startNextPendingTask(downloader);
     },
-    [downloader, startNextPendingTask]
+    [downloader, startNextPendingTask, saveTasks]
   );
 
   const cancelTask = useCallback(
@@ -489,31 +543,55 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     (t) => t.status === 'downloading'
   ).length;
 
+  const actionsValue = useMemo<DownloadActionsContextType>(
+    () => ({
+      addDownloadTask,
+      setShowDownloadPanel,
+    }),
+    [addDownloadTask]
+  );
+
+  const contextValue = useMemo<DownloadContextType>(
+    () => ({
+      downloader,
+      tasks,
+      addDownloadTask,
+      startTask,
+      pauseTask,
+      cancelTask,
+      retryFailedSegments,
+      getProgress,
+      downloadingCount,
+      showDownloadPanel,
+      setShowDownloadPanel,
+    }),
+    [
+      downloader,
+      tasks,
+      addDownloadTask,
+      startTask,
+      pauseTask,
+      cancelTask,
+      retryFailedSegments,
+      getProgress,
+      downloadingCount,
+      showDownloadPanel,
+    ]
+  );
+
   return (
-    <DownloadContext.Provider
-      value={{
-        downloader,
-        tasks,
-        addDownloadTask,
-        startTask,
-        pauseTask,
-        cancelTask,
-        retryFailedSegments,
-        getProgress,
-        downloadingCount,
-        showDownloadPanel,
-        setShowDownloadPanel,
-      }}
-    >
-      {children}
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
-        />
-      )}
-    </DownloadContext.Provider>
+    <DownloadActionsContext.Provider value={actionsValue}>
+      <DownloadContext.Provider value={contextValue}>
+        {children}
+        {toast && (
+          <Toast
+            message={toast.message}
+            type={toast.type}
+            onClose={() => setToast(null)}
+          />
+        )}
+      </DownloadContext.Provider>
+    </DownloadActionsContext.Provider>
   );
 }
 
@@ -521,6 +599,14 @@ export function useDownload() {
   const context = useContext(DownloadContext);
   if (context === undefined) {
     throw new Error('useDownload must be used within a DownloadProvider');
+  }
+  return context;
+}
+
+export function useDownloadActions() {
+  const context = useContext(DownloadActionsContext);
+  if (context === undefined) {
+    throw new Error('useDownloadActions must be used within a DownloadProvider');
   }
   return context;
 }
