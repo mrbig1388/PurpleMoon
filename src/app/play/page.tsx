@@ -28,14 +28,10 @@ import {
 } from '@/lib/db.client';
 import { useDownloadActions } from '@/lib/Download/DownloadContext';
 import DownloadEpisodeSelector from '@/lib/Download/DownloadEpisodeSelector';
+import { getIndexedDBVideoPlaybackUrl } from '@/lib/Download/indexeddb-video-cache';
 import {
-  createPtsTracker,
   filterAdsFromM3U8,
-  inspectFragmentPts,
-  readFirstTsPtsSeconds,
   stripDiscontinuityLegacy,
-  TsFragmentLike,
-  TsPtsTracker,
 } from '@/lib/m3u8-ad-filter';
 import { SearchResult } from '@/lib/types';
 import {
@@ -89,6 +85,71 @@ const loadPlaybackRate = (): number => {
     return sanitizePlaybackRate(parsed);
   } catch {
     return DEFAULT_PLAYBACK_RATE;
+  }
+};
+
+type BufferStrategyType = 'low' | 'medium' | 'high' | 'ultra';
+
+const loadBufferStrategy = (): BufferStrategyType => {
+  if (typeof window === 'undefined') return 'high';
+  try {
+    const saved = localStorage.getItem('bufferStrategy');
+    if (
+      saved === 'low' ||
+      saved === 'medium' ||
+      saved === 'high' ||
+      saved === 'ultra'
+    ) {
+      return saved;
+    }
+  } catch {
+    // ignore
+  }
+  return 'high';
+};
+
+const loadNextEpisodePreCache = (): boolean => {
+  if (typeof window === 'undefined') return true;
+  try {
+    const saved = localStorage.getItem('nextEpisodePreCache');
+    if (saved !== null) return saved !== 'false';
+  } catch {
+    // ignore
+  }
+  return true;
+};
+
+const getBufferConfig = (strategy: BufferStrategyType) => {
+  switch (strategy) {
+    case 'low':
+      return {
+        maxBufferLength: 15,
+        maxMaxBufferLength: 30,
+        backBufferLength: 15,
+        maxBufferSize: 30 * 1000 * 1000,
+      };
+    case 'medium':
+      return {
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        backBufferLength: 30,
+        maxBufferSize: 60 * 1000 * 1000,
+      };
+    case 'ultra':
+      return {
+        maxBufferLength: 120,
+        maxMaxBufferLength: 240,
+        backBufferLength: 60,
+        maxBufferSize: 240 * 1000 * 1000,
+      };
+    case 'high':
+    default:
+      return {
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
+        backBufferLength: 30,
+        maxBufferSize: 100 * 1000 * 1000,
+      };
   }
 };
 
@@ -292,6 +353,69 @@ function PlayPageClient() {
   useEffect(() => {
     blockAdEnabledRef.current = blockAdEnabled;
   }, [blockAdEnabled]);
+
+  const [bufferStrategy, setBufferStrategy] = useState<BufferStrategyType>(() =>
+    loadBufferStrategy()
+  );
+  const bufferStrategyRef = useRef<BufferStrategyType>(bufferStrategy);
+  useEffect(() => {
+    bufferStrategyRef.current = bufferStrategy;
+  }, [bufferStrategy]);
+
+  const nextEpisodePreCacheEnabledRef = useRef<boolean>(
+    loadNextEpisodePreCache()
+  );
+  const nextEpisodePreCacheTriggeredRef = useRef<boolean>(false);
+  const nextEpisodePreCacheAbortRef = useRef<AbortController | null>(null);
+  const localPlaybackBlobUrlsRef = useRef<string[]>([]);
+  const videoUrlRequestSeqRef = useRef<number>(0);
+  const webkitRescueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+
+  const cancelNextEpisodePreCache = useCallback(() => {
+    nextEpisodePreCacheTriggeredRef.current = false;
+    if (nextEpisodePreCacheAbortRef.current) {
+      try {
+        nextEpisodePreCacheAbortRef.current.abort();
+      } catch {
+        // ignore
+      }
+      nextEpisodePreCacheAbortRef.current = null;
+    }
+  }, []);
+
+  const cleanupLocalPlaybackBlobUrls = useCallback(() => {
+    if (localPlaybackBlobUrlsRef.current.length > 0) {
+      localPlaybackBlobUrlsRef.current.forEach((u) => {
+        try {
+          if (typeof u === 'string' && u.startsWith('blob:')) {
+            URL.revokeObjectURL(u);
+          }
+        } catch {
+          // ignore
+        }
+      });
+      localPlaybackBlobUrlsRef.current = [];
+    }
+  }, []);
+
+  useEffect(() => {
+    const syncPlayerSettings = () => {
+      const latestBuffer = loadBufferStrategy();
+      const latestPreCache = loadNextEpisodePreCache();
+      bufferStrategyRef.current = latestBuffer;
+      setBufferStrategy(latestBuffer);
+      nextEpisodePreCacheEnabledRef.current = latestPreCache;
+    };
+    window.addEventListener('moontv:player-settings-updated', syncPlayerSettings);
+    return () => {
+      window.removeEventListener(
+        'moontv:player-settings-updated',
+        syncPlayerSettings
+      );
+    };
+  }, []);
 
   const [videoTitle, setVideoTitle] = useState(searchParams.get('title') || '');
   const [videoYear, setVideoYear] = useState(searchParams.get('year') || '');
@@ -692,21 +816,57 @@ function PlayPageClient() {
     return `<div style="padding: 3px 9px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; user-select: none; ${bgStyle}">${resUpper}</div>`;
   };
 
-  const updateVideoUrl = (
+  const updateVideoUrl = async (
     detailData: SearchResult | null,
     episodeIndex: number
   ) => {
+    cancelNextEpisodePreCache();
     if (
       !detailData ||
       !detailData.episodes ||
       episodeIndex >= detailData.episodes.length
     ) {
+      cleanupLocalPlaybackBlobUrls();
       setVideoUrl('');
       return;
     }
-    const newUrl = detailData?.episodes[episodeIndex] || '';
-    if (newUrl !== videoUrl) {
-      setVideoUrl(newUrl);
+
+    const reqSeq = ++videoUrlRequestSeqRef.current;
+    let resolvedUrl = detailData?.episodes[episodeIndex] || '';
+
+    // 优先检查 IndexedDB 离线缓存库是否已完整缓存本集
+    if (detailData.source && detailData.id) {
+      try {
+        const idbResult = await getIndexedDBVideoPlaybackUrl(
+          detailData.source,
+          detailData.id,
+          episodeIndex
+        );
+        if (reqSeq !== videoUrlRequestSeqRef.current) {
+          idbResult.objectUrls?.forEach((u) => URL.revokeObjectURL(u));
+          return;
+        }
+        if (idbResult.hasLocal && idbResult.url) {
+          cleanupLocalPlaybackBlobUrls();
+          localPlaybackBlobUrlsRef.current = idbResult.objectUrls || [];
+          resolvedUrl = idbResult.url;
+          console.info(
+            `[离线缓存] 已命中本地 IndexedDB 分片缓存: 第 ${episodeIndex + 1} 集`
+          );
+        } else {
+          cleanupLocalPlaybackBlobUrls();
+        }
+      } catch {
+        cleanupLocalPlaybackBlobUrls();
+      }
+    } else {
+      cleanupLocalPlaybackBlobUrls();
+    }
+
+    if (reqSeq !== videoUrlRequestSeqRef.current) return;
+
+    if (resolvedUrl !== videoUrl) {
+      setVideoUrl(resolvedUrl);
     } else {
       isLoadingNewStreamRef.current = false;
       isEpisodeChangingRef.current = false;
@@ -714,20 +874,145 @@ function PlayPageClient() {
     }
   };
 
+  const isWebKitBrowser = (): boolean => {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    const isIOSWebKit =
+      /iPad|iPhone|iPod/i.test(ua) ||
+      (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
+    return (
+      isIOSWebKit ||
+      (/Safari/i.test(ua) && !/Chrome|Chromium|Edg|OPR|Android/i.test(ua))
+    );
+  };
+
+  const buildNativeHlsPlaybackUrl = (url: string): string => {
+    if (!url || typeof window === 'undefined') return url;
+    if (url.startsWith('blob:') || url.includes('/api/proxy-m3u8')) return url;
+    if (!blockAdEnabledRef.current) return url;
+    if (!/^https?:\/\//i.test(url)) return url;
+    return `/api/proxy-m3u8?url=${encodeURIComponent(url)}`;
+  };
+
   const ensureVideoSource = (video: HTMLVideoElement | null, url: string) => {
     if (!video || !url) return;
     const sources = Array.from(video.getElementsByTagName('source'));
-    const existed = sources.some((s) => s.src === url);
-    if (!existed) {
+    const isHlsJsActive = !!(video as any).hls;
+    const isSafari = isWebKitBrowser();
+
+    // 当 HLS.js (MSE) 已接管播放时，在 Safari / iOS WebKit 上必须移除 <video> 下的 <source> 标签，
+    // 防止 WebKit 原生 HLS 播放器抢占同一个 <video> 实例直连原始流（导致移动端去广告失效）
+    if (isSafari && isHlsJsActive) {
       sources.forEach((s) => s.remove());
-      const sourceEl = document.createElement('source');
-      sourceEl.src = url;
-      video.appendChild(sourceEl);
+    } else {
+      const existed = sources.some((s) => s.src === url);
+      if (!existed) {
+        sources.forEach((s) => s.remove());
+        const sourceEl = document.createElement('source');
+        sourceEl.src = url;
+        video.appendChild(sourceEl);
+      }
     }
+
     video.disableRemotePlayback = false;
     if (video.hasAttribute('disableRemotePlayback')) {
       video.removeAttribute('disableRemotePlayback');
     }
+    video.setAttribute('playsinline', 'true');
+    video.setAttribute('webkit-playsinline', 'true');
+    (video as any).playsInline = true;
+    (video as any).webkitPlaysInline = true;
+  };
+
+  const triggerNextEpisodePreCache = () => {
+    const d = detailRef.current;
+    const curIdx = currentEpisodeIndexRef.current;
+    if (!d || !d.episodes || curIdx >= d.episodes.length - 1) return;
+
+    const nextEpisodeUrl = d.episodes[curIdx + 1];
+    if (!nextEpisodeUrl || !/^https?:\/\//i.test(nextEpisodeUrl)) return;
+    if (getArtPlayerType(nextEpisodeUrl) !== 'm3u8') return;
+
+    cancelNextEpisodePreCache();
+    nextEpisodePreCacheTriggeredRef.current = true;
+    const controller = new AbortController();
+    nextEpisodePreCacheAbortRef.current = controller;
+    const { signal } = controller;
+
+    const resolveUri = (target: string, base: string): string => {
+      try {
+        return new URL(target.trim(), base).toString();
+      } catch {
+        return target.trim();
+      }
+    };
+
+    (async () => {
+      try {
+        let playlistUrl = nextEpisodeUrl;
+        const res = await fetch(playlistUrl, { signal });
+        if (!res.ok || signal.aborted) return;
+        let m3u8Text = await res.text();
+        if (signal.aborted) return;
+
+        // 若为主播放列表（含 #EXT-X-STREAM-INF），跟进首个子播放列表
+        if (m3u8Text.includes('#EXT-X-STREAM-INF')) {
+          const rawLines = m3u8Text.split(/\r?\n/);
+          for (let i = 0; i < rawLines.length; i++) {
+            if (rawLines[i].trim().startsWith('#EXT-X-STREAM-INF')) {
+              const nextLine = rawLines[i + 1]?.trim();
+              if (nextLine && !nextLine.startsWith('#')) {
+                playlistUrl = resolveUri(nextLine, playlistUrl);
+                const subRes = await fetch(playlistUrl, { signal });
+                if (!subRes.ok || signal.aborted) return;
+                m3u8Text = await subRes.text();
+                break;
+              }
+            }
+          }
+        }
+        if (signal.aborted) return;
+
+        // 先通过去广告引擎过滤，避免浪费带宽预热广告分片
+        if (blockAdEnabledRef.current) {
+          try {
+            const extra = (process.env.NEXT_PUBLIC_AD_BLOCK_PATTERNS || '')
+              .split(',')
+              .map((x) => x.trim())
+              .filter(Boolean);
+            const filtered = filterAdsFromM3U8(m3u8Text, {
+              baseUrl: playlistUrl,
+              extraPatterns: extra,
+              extraFingerprints: getCustomFingerprints(
+                process.env.NEXT_PUBLIC_AD_FINGERPRINTS
+              ),
+            });
+            m3u8Text = filtered.cleanContent ?? filtered.content;
+          } catch {
+            // ignore
+          }
+        }
+
+        const tsUrls: string[] = [];
+        for (const line of m3u8Text.split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          tsUrls.push(resolveUri(trimmed, playlistUrl));
+          if (tsUrls.length >= 20) break;
+        }
+
+        for (let i = 0; i < tsUrls.length; i++) {
+          if (signal.aborted) return;
+          try {
+            await fetch(tsUrls[i], { signal });
+          } catch {
+            if (signal.aborted) return;
+          }
+        }
+      } catch {
+        // 静默忽略预缓冲异常或取消
+      }
+    })();
   };
 
   const requestWakeLock = async () => {
@@ -754,6 +1039,12 @@ function PlayPageClient() {
   };
 
   const cleanupPlayer = () => {
+    cancelNextEpisodePreCache();
+    cleanupLocalPlaybackBlobUrls();
+    if (webkitRescueTimerRef.current) {
+      clearTimeout(webkitRescueTimerRef.current);
+      webkitRescueTimerRef.current = null;
+    }
     if (clockIntervalRef.current) {
       clearInterval(clockIntervalRef.current);
       clockIntervalRef.current = null;
@@ -878,9 +1169,6 @@ function PlayPageClient() {
     }
   };
 
-  const tsPtsTrackerRef = useRef<TsPtsTracker>(createPtsTracker());
-  const activeLevelFragmentsRef = useRef<TsFragmentLike[] | null>(null);
-
   class CustomHlsJsLoader extends Hls.DefaultConfig.loader {
     constructor(config: any) {
       super(config);
@@ -934,43 +1222,13 @@ function PlayPageClient() {
                 } catch {
                   // ignore
                 }
-                // 使用 cleanContent：清除正片内部的伪周期性 #EXT-X-DISCONTINUITY 标记（如如意/电影天堂每 5 片插入一次的分块标记），
-                // 同时保留被删广告段切口处的真实 #EXT-X-DISCONTINUITY 标记，防止跨切口 PTS 跳变导致总时长缩水（如 19 分骤变为 9 分）
+                // 使用 cleanContent：清除正片内每 5 片一次的伪周期性 #EXT-X-DISCONTINUITY 标记（消除周期性重置卡顿），
+                // 同时保留被删广告段切口处的唯一真实 #EXT-X-DISCONTINUITY 标记（防止跨切口 PTS 跳变导致 19 分变 9 分）
                 response.data =
                   r.cleanContent ?? stripDiscontinuityLegacy(r.content);
               } catch {
                 response.data = stripDiscontinuityLegacy(response.data);
               }
-            }
-            return onSuccess(response, stats, context, networkDetails);
-          };
-        } else if ((context as any)?.frag) {
-          const onSuccess = callbacks.onSuccess;
-          callbacks.onSuccess = function (
-            response: any,
-            stats: any,
-            context: any,
-            networkDetails: any
-          ) {
-            try {
-              if (
-                response?.data instanceof ArrayBuffer &&
-                response.data.byteLength >= 564
-              ) {
-                const rawPts = readFirstTsPtsSeconds(
-                  new Uint8Array(response.data)
-                );
-                if (rawPts !== null) {
-                  inspectFragmentPts(
-                    tsPtsTrackerRef.current,
-                    context?.frag,
-                    rawPts,
-                    activeLevelFragmentsRef.current
-                  );
-                }
-              }
-            } catch {
-              // ignore runtime PTS inspection errors
             }
             return onSuccess(response, stats, context, networkDetails);
           };
@@ -989,8 +1247,12 @@ function PlayPageClient() {
     if (!video || !url) return;
     isLoadingNewStreamRef.current = true;
     hasHandledCanPlayRef.current = false;
-    tsPtsTrackerRef.current = createPtsTracker();
-    activeLevelFragmentsRef.current = null;
+    cancelNextEpisodePreCache();
+
+    if (webkitRescueTimerRef.current) {
+      clearTimeout(webkitRescueTimerRef.current);
+      webkitRescueTimerRef.current = null;
+    }
 
     if (video.hls) {
       try {
@@ -1014,6 +1276,7 @@ function PlayPageClient() {
     }
 
     const streamType = getArtPlayerType(url);
+    const isLocalBlobPlaylist = url.startsWith('blob:');
 
     // 换集时先将进度归零并重置片头跳过标记，防止上一集的播放时间戳残留触发误判
     if (isEpisodeChangingRef.current) {
@@ -1037,20 +1300,18 @@ function PlayPageClient() {
         : -1;
 
     if (streamType === 'm3u8' && Hls && Hls.isSupported()) {
+      const bufferConfig = getBufferConfig(bufferStrategyRef.current);
       const hlsConfig: any = {
         debug: false,
         enableWorker: true,
         lowLatencyMode: false,
-        maxBufferLength: 60,
-        maxMaxBufferLength: 120,
-        backBufferLength: 30,
-        maxBufferSize: 100 * 1000 * 1000,
-        // 消除定长分块源（如每 5 片 / 约 15-20s 一块）分片交界处因音频帧微差触发静音帧注入/丢帧导致的声音卡顿
-        maxBufferHole: 0.5,
-        maxAudioFramesDrift: 8,
-        stretchShortVideoTrack: true,
-        maxFragLookUpTolerance: 0.25,
-        loader: blockAdEnabledRef.current
+        maxBufferLength: bufferConfig.maxBufferLength,
+        maxMaxBufferLength: bufferConfig.maxMaxBufferLength,
+        backBufferLength: bufferConfig.backBufferLength,
+        maxBufferSize: bufferConfig.maxBufferSize,
+        loader: isLocalBlobPlaylist
+          ? Hls.DefaultConfig.loader
+          : blockAdEnabledRef.current
           ? CustomHlsJsLoader
           : Hls.DefaultConfig.loader,
       };
@@ -1060,18 +1321,39 @@ function PlayPageClient() {
 
       const hls = new Hls(hlsConfig);
 
-      hls.on(Hls.Events.LEVEL_LOADED, (_event: any, data: any) => {
-        if (data?.details?.fragments) {
-          activeLevelFragmentsRef.current = data.details.fragments;
-        }
-      });
+      video.hls = hls;
+      if (art) art.hls = hls;
+      ensureVideoSource(video, url);
 
       hls.loadSource(url);
       hls.attachMedia(video);
-      video.hls = hls;
-      if (art) art.hls = hls;
 
-      ensureVideoSource(video, url);
+      if (isWebKitBrowser()) {
+        webkitRescueTimerRef.current = setTimeout(() => {
+          webkitRescueTimerRef.current = null;
+          if (video.hls !== hls) return;
+          let hasBuffered = false;
+          try {
+            hasBuffered = video.buffered.length > 0;
+          } catch {
+            hasBuffered = false;
+          }
+          const currentSrc = video.currentSrc || video.src || '';
+          const mseReadyState =
+            (hls as any)?.bufferController?.mediaSource?.readyState || '';
+          const usingBlobMse =
+            currentSrc.startsWith('blob:') && mseReadyState !== 'closed';
+          if (video.readyState === 0 && !hasBuffered && !usingBlobMse) {
+            try {
+              hls.detachMedia();
+              hls.attachMedia(video);
+              hls.startLoad(startPos > 0 ? startPos : -1);
+            } catch {
+              // ignore
+            }
+          }
+        }, 3000);
+      }
 
       hls.on(Hls.Events.ERROR, function (_event: any, data: any) {
         if (data.fatal) {
@@ -1091,8 +1373,10 @@ function PlayPageClient() {
         }
       });
     } else {
-      video.src = url;
-      ensureVideoSource(video, url);
+      const targetUrl =
+        streamType === 'm3u8' ? buildNativeHlsPlaybackUrl(url) : url;
+      video.src = targetUrl;
+      ensureVideoSource(video, targetUrl);
       video.load();
       isLoadingNewStreamRef.current = false;
       if (shouldAutoPlayAfterSwitchRef.current) {
@@ -2091,6 +2375,82 @@ function PlayPageClient() {
             },
           },
           {
+            name: 'buffer-strategy',
+            html: '缓冲策略',
+            tooltip:
+              bufferStrategyRef.current === 'low'
+                ? '低缓冲(15s)'
+                : bufferStrategyRef.current === 'medium'
+                ? '中缓冲(30s)'
+                : bufferStrategyRef.current === 'ultra'
+                ? '超高缓冲(120s)'
+                : '高缓冲(60s)',
+            selector: [
+              {
+                html: '低缓冲 (15s/省流)',
+                value: 'low',
+                default: bufferStrategyRef.current === 'low',
+              },
+              {
+                html: '中缓冲 (30s/均衡)',
+                value: 'medium',
+                default: bufferStrategyRef.current === 'medium',
+              },
+              {
+                html: '高缓冲 (60s/推荐)',
+                value: 'high',
+                default: bufferStrategyRef.current === 'high',
+              },
+              {
+                html: '超高缓冲 (120s/极速)',
+                value: 'ultra',
+                default: bufferStrategyRef.current === 'ultra',
+              },
+            ],
+            onSelect: function (item: any) {
+              const nextStrategy = (item.value || 'high') as BufferStrategyType;
+              try {
+                localStorage.setItem('bufferStrategy', nextStrategy);
+                bufferStrategyRef.current = nextStrategy;
+                setBufferStrategy(nextStrategy);
+                if (artPlayerRef.current) {
+                  resumeTimeRef.current = artPlayerRef.current.currentTime;
+                  isManualSourceSwitchRef.current = true;
+                  const vEl = artPlayerRef.current.video as
+                    | HTMLVideoElement
+                    | undefined;
+                  if (vEl && videoUrl) {
+                    attachStreamToVideo(vEl, videoUrl, artPlayerRef.current);
+                  }
+                }
+              } catch {
+                // ignore
+              }
+              return item.html;
+            },
+          },
+          {
+            name: 'next-episode-precache',
+            html: '下集预缓冲',
+            tooltip: nextEpisodePreCacheEnabledRef.current
+              ? '已开启'
+              : '已关闭',
+            switch: nextEpisodePreCacheEnabledRef.current,
+            onSwitch: function (item: any) {
+              const newVal = !item.switch;
+              nextEpisodePreCacheEnabledRef.current = newVal;
+              try {
+                localStorage.setItem('nextEpisodePreCache', String(newVal));
+              } catch {
+                // ignore
+              }
+              if (!newVal) {
+                cancelNextEpisodePreCache();
+              }
+              return newVal;
+            },
+          },
+          {
             name: '跳过片头片尾',
             html: '跳过片头片尾',
             switch: skipConfigRef.current.enable,
@@ -2518,6 +2878,16 @@ function PlayPageClient() {
               }, 0);
             }
           }
+        }
+
+        // 播放进度达到 90% 时静默预热下一集 M3U8 与前 20 个去广告后正片分片
+        if (
+          nextEpisodePreCacheEnabledRef.current &&
+          duration > 0 &&
+          currentTime / duration >= 0.9 &&
+          !nextEpisodePreCacheTriggeredRef.current
+        ) {
+          triggerNextEpisodePreCache();
         }
 
         if (!skipConfigRef.current.enable) return;

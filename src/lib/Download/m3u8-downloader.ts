@@ -192,7 +192,7 @@ export class M3U8Downloader {
               process.env.NEXT_PUBLIC_AD_FINGERPRINTS
             ),
           });
-          m3u8Content = filtered.content;
+          m3u8Content = filtered.cleanContent ?? filtered.content;
         }
       } catch (e) {
         console.warn('下载任务 M3U8 去广告过滤异常，回退原始播放列表:', e);

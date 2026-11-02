@@ -6,11 +6,27 @@ import { Settings, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+export type BufferStrategyType = 'low' | 'medium' | 'high' | 'ultra';
+
+const BUFFER_STRATEGY_OPTIONS: Array<{
+  value: BufferStrategyType;
+  label: string;
+  desc: string;
+}> = [
+  { value: 'low', label: '低缓冲', desc: '前向 15s / 30MB（移动端省流量）' },
+  { value: 'medium', label: '中缓冲', desc: '前向 30s / 60MB（日常均衡）' },
+  { value: 'high', label: '高缓冲', desc: '前向 60s / 100MB（推荐默认）' },
+  { value: 'ultra', label: '超高缓冲', desc: '前向 120s / 240MB（高速宽带）' },
+];
+
 export const SettingsButton: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [imageProxyUrl, setImageProxyUrl] = useState('');
   const [enableOptimization, setEnableOptimization] = useState(true);
   const [enableImageProxy, setEnableImageProxy] = useState(false);
+  const [bufferStrategy, setBufferStrategy] =
+    useState<BufferStrategyType>('high');
+  const [nextEpisodePreCache, setNextEpisodePreCache] = useState(true);
   const [mounted, setMounted] = useState(false);
 
   // 确保组件已挂载
@@ -27,7 +43,6 @@ export const SettingsButton: React.FC = () => {
       if (savedEnableImageProxy !== null) {
         setEnableImageProxy(JSON.parse(savedEnableImageProxy));
       } else if (defaultImageProxy) {
-        // 如果有默认图片代理配置，则默认开启
         setEnableImageProxy(true);
       }
 
@@ -43,8 +58,29 @@ export const SettingsButton: React.FC = () => {
       if (savedEnableOptimization !== null) {
         setEnableOptimization(JSON.parse(savedEnableOptimization));
       }
+
+      const savedBufferStrategy = localStorage.getItem('bufferStrategy');
+      if (
+        savedBufferStrategy === 'low' ||
+        savedBufferStrategy === 'medium' ||
+        savedBufferStrategy === 'high' ||
+        savedBufferStrategy === 'ultra'
+      ) {
+        setBufferStrategy(savedBufferStrategy);
+      }
+
+      const savedNextPreCache = localStorage.getItem('nextEpisodePreCache');
+      if (savedNextPreCache !== null) {
+        setNextEpisodePreCache(savedNextPreCache !== 'false');
+      }
     }
   }, []);
+
+  const notifyPlayerSettingsUpdated = () => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('moontv:player-settings-updated'));
+    }
+  };
 
   const handleImageProxyUrlChange = (value: string) => {
     setImageProxyUrl(value);
@@ -67,6 +103,22 @@ export const SettingsButton: React.FC = () => {
     }
   };
 
+  const handleBufferStrategyChange = (value: BufferStrategyType) => {
+    setBufferStrategy(value);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('bufferStrategy', value);
+      notifyPlayerSettingsUpdated();
+    }
+  };
+
+  const handleNextEpisodePreCacheToggle = (value: boolean) => {
+    setNextEpisodePreCache(value);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('nextEpisodePreCache', String(value));
+      notifyPlayerSettingsUpdated();
+    }
+  };
+
   const handleSettingsClick = () => {
     setIsOpen(!isOpen);
   };
@@ -79,12 +131,12 @@ export const SettingsButton: React.FC = () => {
   const handleResetSettings = () => {
     const defaultImageProxy = (window as any).RUNTIME_CONFIG?.IMAGE_PROXY || '';
 
-    // 重置状态
     setEnableOptimization(true);
     setEnableImageProxy(!!defaultImageProxy);
     setImageProxyUrl(defaultImageProxy);
+    setBufferStrategy('high');
+    setNextEpisodePreCache(true);
 
-    // 保存到 localStorage
     if (typeof window !== 'undefined') {
       localStorage.setItem('enableOptimization', JSON.stringify(true));
       localStorage.setItem('doubanProxyUrl', '');
@@ -93,6 +145,9 @@ export const SettingsButton: React.FC = () => {
         JSON.stringify(!!defaultImageProxy)
       );
       localStorage.setItem('imageProxyUrl', defaultImageProxy);
+      localStorage.setItem('bufferStrategy', 'high');
+      localStorage.setItem('nextEpisodePreCache', 'true');
+      notifyPlayerSettingsUpdated();
     }
   };
 
@@ -149,6 +204,66 @@ export const SettingsButton: React.FC = () => {
                   className='sr-only peer'
                   checked={enableOptimization}
                   onChange={(e) => handleOptimizationToggle(e.target.checked)}
+                />
+                <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
+                <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
+              </div>
+            </label>
+          </div>
+
+          {/* 播放器缓冲策略 */}
+          <div className='space-y-2.5'>
+            <div className='flex items-center justify-between'>
+              <div>
+                <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                  播放缓冲策略
+                </h4>
+                <p className='text-xs text-gray-500 dark:text-gray-400 mt-0.5'>
+                  {
+                    BUFFER_STRATEGY_OPTIONS.find(
+                      (o) => o.value === bufferStrategy
+                    )?.desc
+                  }
+                </p>
+              </div>
+            </div>
+            <div className='grid grid-cols-4 gap-2'>
+              {BUFFER_STRATEGY_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type='button'
+                  onClick={() => handleBufferStrategyChange(opt.value)}
+                  className={`px-2 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                    bufferStrategy === opt.value
+                      ? 'bg-green-500 text-white border-green-500 shadow-sm'
+                      : 'bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 下集自动预缓冲 */}
+          <div className='flex items-center justify-between'>
+            <div>
+              <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                下集自动预缓冲
+              </h4>
+              <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+                本集播放至 90% 时静默预热下一集前 20 个正片分片
+              </p>
+            </div>
+            <label className='flex items-center cursor-pointer'>
+              <div className='relative'>
+                <input
+                  type='checkbox'
+                  className='sr-only peer'
+                  checked={nextEpisodePreCache}
+                  onChange={(e) =>
+                    handleNextEpisodePreCacheToggle(e.target.checked)
+                  }
                 />
                 <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
                 <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
