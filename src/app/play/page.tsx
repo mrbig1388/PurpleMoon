@@ -891,6 +891,15 @@ function PlayPageClient() {
     if (url.startsWith('blob:') || url.includes('/api/proxy-m3u8')) return url;
     if (!blockAdEnabledRef.current) return url;
     if (!/^https?:\/\//i.test(url)) return url;
+    try {
+      const parsed = new URL(url);
+      // 非标端口（非 80/443）不经过服务端代理，直接回退原始流地址
+      if (parsed.port && parsed.port !== '80' && parsed.port !== '443') {
+        return url;
+      }
+    } catch {
+      return url;
+    }
     return `/api/proxy-m3u8?url=${encodeURIComponent(url)}`;
   };
 
@@ -1375,6 +1384,22 @@ function PlayPageClient() {
     } else {
       const targetUrl =
         streamType === 'm3u8' ? buildNativeHlsPlaybackUrl(url) : url;
+      if (targetUrl !== url) {
+        const handleProxyFallback = () => {
+          video.removeEventListener('error', handleProxyFallback);
+          if (video.src.includes('/api/proxy-m3u8')) {
+            video.src = url;
+            ensureVideoSource(video, url);
+            video.load();
+            if (shouldAutoPlayAfterSwitchRef.current) {
+              video.play().catch(() => {
+                // ignore
+              });
+            }
+          }
+        };
+        video.addEventListener('error', handleProxyFallback, { once: true });
+      }
       video.src = targetUrl;
       ensureVideoSource(video, targetUrl);
       video.load();
