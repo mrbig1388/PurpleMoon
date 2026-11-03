@@ -15,7 +15,7 @@
 ![Docker Ready](https://img.shields.io/badge/Docker-ready-blue?logo=docker)
 ![HLS](https://img.shields.io/badge/HLS-1.7.3-8A2BE2)
 ![Artplayer](https://img.shields.io/badge/Artplayer-5.4.0-RED)
-![Version](https://img.shields.io/badge/Version-2.8.7-red)
+![Version](https://img.shields.io/badge/Version-2.8.8-red)
 ![Github](https://img.shields.io/badge/github-PurpleSat-8A2BE2?logo=github)
 
 </div>
@@ -955,6 +955,7 @@ docker compose logs --tail 50 caddy
 | 变量 | 说明 | 可选值 | 默认值 |
 | ---- | ---- | ------ | ------ |
 | `NEXT_PUBLIC_ENABLE_REGISTER` | 是否开放注册，仅在非 localstorage 部署时生效 | true / false | false |
+| `TURNSTILE_DISABLED` | Cloudflare Turnstile 应急开关。后台把 Secret Key 填错会让包括站长在内的所有人无法登录，此时设为 true 并重启即可强制关闭人机验证（优先级高于后台设置），修正密钥后再去掉该变量 | true / false | 空 |
 
 > 邀请码及其开关完全由**管理后台**管理（后台 → 邀请码），不再读取 `VALID_INVITE_CODE` / `REQUIRE_INVITE_CODE` 环境变量。后台尚未保存过邀请码设置时，开放注册默认强制邀请码；此时若后台没有任何邀请码，注册会提示联系站长。
 

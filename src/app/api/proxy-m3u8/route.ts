@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { getAuthInfoFromCookie } from '@/lib/auth';
+import { getClientIp } from '@/lib/client-ip';
 import {
   filterAdsFromM3U8,
   parseAdFingerprints,
@@ -13,6 +15,56 @@ export const runtime = 'edge';
 const MAX_REDIRECTS = 3;
 const UPSTREAM_TIMEOUT_MS = 8000;
 const ALLOWED_PORTS = new Set(['', '80', '443']);
+
+// 2.8.8：每个用户（无登录信息时按 IP）每分钟最多请求次数。进程内计数，多实例部署时各实例独立计算。
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 240;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function isRateLimited(key: string): boolean {
+  const now = Date.now();
+  if (rateBuckets.size > 5000) {
+    rateBuckets.forEach((v, k) => {
+      if (v.resetAt <= now) rateBuckets.delete(k);
+    });
+  }
+  const bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > RATE_LIMIT_MAX_REQUESTS;
+}
+
+/**
+ * 2.8.8：DNS 解析后校验（仅 Node.js 运行时生效）。
+ * 字面量校验挡不住“公网域名解析到内网地址”，这里把主机名解析成 IP 再逐个校验。
+ * - Edge 运行时没有 DNS API，自动跳过（Edge 网络本身通常不能直连内网）。
+ * - 解析失败不当作“被拦截”，交给后续 fetch 自然失败（502）。
+ * - 仍存在极小的“校验后重新解析”(DNS 重绑定) 时间窗，生产环境请配合出口防火墙。
+ */
+async function assertResolvedHostIsPublic(hostname: string): Promise<void> {
+  if (process.env.NEXT_RUNTIME !== 'nodejs') return;
+  const host = hostname.replace(/^\[|\]$/g, '');
+  // 字面量 IP 已由 checkUpstreamUrlSafety 校验过
+  if (/^[\d.]+$/.test(host) || host.includes(':')) return;
+
+  let addresses: { address: string }[] = [];
+  try {
+    const dns = await import(/* webpackIgnore: true */ 'node:dns/promises');
+    addresses = await dns.lookup(host, { all: true, verbatim: true });
+  } catch {
+    return;
+  }
+  for (const { address } of addresses) {
+    const literal = address.includes(':') ? `[${address}]` : address;
+    const safety = checkUpstreamUrlSafety(`http://${literal}/`);
+    if (!safety.ok) {
+      throw new UpstreamBlockedError('域名解析到了内网或保留地址');
+    }
+  }
+}
 
 class UpstreamBlockedError extends Error {
   constructor(message: string) {
@@ -100,6 +152,7 @@ async function fetchUpstreamM3U8WithFinalUrl(
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const parsed = validateUpstreamTarget(current);
+    await assertResolvedHostIsPublic(parsed.hostname);
 
     const res = await fetch(current, {
       redirect: 'manual',
@@ -174,6 +227,15 @@ function resolveRelativeM3U8Links(
     }
   };
 
+  // 记录最近一个尚未拿到 URI 的 #EXTINF / #EXT-X-STREAM-INF 标签位置，URI 被丢弃时一并删除，避免留下孤立标签
+  let pendingTagIndex = -1;
+  const dropPendingTag = () => {
+    if (pendingTagIndex >= 0) {
+      resolvedLines.splice(pendingTagIndex, 1);
+      pendingTagIndex = -1;
+    }
+  };
+
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
     const trimmed = line.trim();
@@ -185,9 +247,11 @@ function resolveRelativeM3U8Links(
       const uriMatch = line.match(/URI="([^"]+)"/);
       if (uriMatch && uriMatch[1]) {
         const absKeyUri = toAbsoluteUrl(uriMatch[1]);
-        if (absKeyUri) {
-          line = line.replace(/URI="[^"]+"/, `URI="${absKeyUri}"`);
+        if (!absKeyUri) {
+          // 2.8.8：密钥/初始化段地址不合法（如 file://）时整行丢弃，不再原样保留
+          continue;
         }
+        line = line.replace(/URI="[^"]+"/, `URI="${absKeyUri}"`);
       }
       resolvedLines.push(line);
       continue;
@@ -197,6 +261,9 @@ function resolveRelativeM3U8Links(
       resolvedLines.push(line);
       if (trimmed.startsWith('#EXT-X-STREAM-INF:')) {
         nextLineIsVariantPlaylist = true;
+        pendingTagIndex = resolvedLines.length - 1;
+      } else if (trimmed.startsWith('#EXTINF:')) {
+        pendingTagIndex = resolvedLines.length - 1;
       }
       continue;
     }
@@ -207,17 +274,21 @@ function resolveRelativeM3U8Links(
     }
 
     const absUrl = toAbsoluteUrl(trimmed);
+    const wasVariantLine = nextLineIsVariantPlaylist;
+    nextLineIsVariantPlaylist = false;
     if (!absUrl) {
+      dropPendingTag();
       continue;
     }
 
-    const isSubM3u8 =
-      nextLineIsVariantPlaylist || /\.m3u8?($|\?)/i.test(absUrl);
-    nextLineIsVariantPlaylist = false;
+    const isSubM3u8 = wasVariantLine || /\.m3u8?($|\?)/i.test(absUrl);
 
     if (isSubM3u8) {
-      const safety = checkUpstreamUrlSafety(absUrl);
-      if (!safety.ok) {
+      // 子播放列表还会再经过本代理：改写阶段就按代理的规则（字面量安全 + 80/443 端口）校验，不合规直接丢弃
+      try {
+        validateUpstreamTarget(absUrl);
+      } catch {
+        dropPendingTag();
         continue;
       }
       const adBlockParam = adBlockEnabled ? '' : '&adblock=false';
@@ -227,6 +298,7 @@ function resolveRelativeM3U8Links(
     } else {
       resolvedLines.push(absUrl);
     }
+    pendingTagIndex = -1;
   }
 
   return resolvedLines.join('\n');
@@ -241,6 +313,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       { error: '拒绝跨站调用代理接口' },
       { status: 403 }
+    );
+  }
+
+  const authUser = getAuthInfoFromCookie(request)?.username;
+  const rateKey = authUser
+    ? `u:${authUser}`
+    : `ip:${getClientIp(request)}`;
+  if (isRateLimited(rateKey)) {
+    return NextResponse.json(
+      { error: '请求过于频繁，请稍后再试' },
+      { status: 429, headers: { 'Retry-After': '30' } }
     );
   }
 

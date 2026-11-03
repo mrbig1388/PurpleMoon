@@ -15,6 +15,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Missing image URL' }, { status: 400 });
   }
 
+  // 2.8.8：URL 解析器会把 /../ 与 /%2e%2e/ 提前规范化掉，之后再检查 pathname 永远查不到 '..'，
+  // 所以必须在解析前对原始字符串做路径穿越检查（含 %2e / %2E / 反斜杠写法），直接返回 400。
+  if (/(^|[/\\])(\.|%2e){2}([/\\?#]|$)/i.test(imageUrl)) {
+    return NextResponse.json({ error: 'Invalid image path' }, { status: 400 });
+  }
+
   let parsedImageUrl: URL;
   try {
     parsedImageUrl = new URL(imageUrl);
@@ -106,9 +112,10 @@ export async function GET(request: Request) {
       headers,
     });
   } catch {
+    // 上游不可达属于网关错误，不是本服务内部错误
     return NextResponse.json(
       { error: 'Error fetching image' },
-      { status: 500 }
+      { status: 502 }
     );
   }
 }

@@ -47,7 +47,14 @@ export function getImageProxyUrl(): string | null {
   // 本地未开启图片代理，则不使用代理
   const enableImageProxy = localStorage.getItem('enableImageProxy');
   if (enableImageProxy !== null) {
-    if (!JSON.parse(enableImageProxy) as boolean) {
+    // 2.8.8：localStorage 值损坏时（JSON.parse 抛错）视为未设置，而不是让所有页面崩溃
+    let enabled: unknown = true;
+    try {
+      enabled = JSON.parse(enableImageProxy);
+    } catch {
+      enabled = true;
+    }
+    if (enabled === false) {
       return null;
     }
   }

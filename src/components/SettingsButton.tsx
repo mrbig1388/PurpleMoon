@@ -19,6 +19,16 @@ const BUFFER_STRATEGY_OPTIONS: Array<{
   { value: 'ultra', label: '超高缓冲', desc: '前向 120s / 240MB（高速宽带）' },
 ];
 
+/** 2.8.8：localStorage 里的值可能被手动改坏或被其他程序写入，解析失败时回退默认值而不是让页面崩溃 */
+function parseSavedBoolean(raw: string, fallback: boolean): boolean {
+  try {
+    const value = JSON.parse(raw);
+    return typeof value === 'boolean' ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export const SettingsButton: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [imageProxyUrl, setImageProxyUrl] = useState('');
@@ -41,7 +51,7 @@ export const SettingsButton: React.FC = () => {
       const defaultImageProxy =
         (window as any).RUNTIME_CONFIG?.IMAGE_PROXY || '';
       if (savedEnableImageProxy !== null) {
-        setEnableImageProxy(JSON.parse(savedEnableImageProxy));
+        setEnableImageProxy(parseSavedBoolean(savedEnableImageProxy, false));
       } else if (defaultImageProxy) {
         setEnableImageProxy(true);
       }
@@ -56,7 +66,7 @@ export const SettingsButton: React.FC = () => {
       const savedEnableOptimization =
         localStorage.getItem('enableOptimization');
       if (savedEnableOptimization !== null) {
-        setEnableOptimization(JSON.parse(savedEnableOptimization));
+        setEnableOptimization(parseSavedBoolean(savedEnableOptimization, true));
       }
 
       const savedBufferStrategy = localStorage.getItem('bufferStrategy');

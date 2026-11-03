@@ -19,6 +19,16 @@ export function resolveTurnstileConfig(
   config?: AdminConfig | null
 ): TurnstileConfig {
   const raw = config?.TurnstileConfig;
+  // 2.8.8 应急开关：Secret Key 填错会让站长自己也无法登录，设置环境变量 TURNSTILE_DISABLED=true 并重启即可强制关闭
+  if ((process.env.TURNSTILE_DISABLED || '').trim().toLowerCase() === 'true') {
+    return {
+      Enabled: false,
+      EnableLogin: false,
+      EnableRegister: false,
+      SiteKey: '',
+      SecretKey: '',
+    };
+  }
   const envSiteKey = (process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '').trim();
   const envSecretKey = (process.env.TURNSTILE_SECRET_KEY || '').trim();
 
