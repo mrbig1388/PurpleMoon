@@ -15,7 +15,7 @@
 ![Docker Ready](https://img.shields.io/badge/Docker-ready-blue?logo=docker)
 ![HLS](https://img.shields.io/badge/HLS-1.7.3-8A2BE2)
 ![Artplayer](https://img.shields.io/badge/Artplayer-5.4.0-RED)
-![Version](https://img.shields.io/badge/Version-2.8.8-red)
+![Version](https://img.shields.io/badge/Version-2.8.9-red)
 ![Github](https://img.shields.io/badge/github-PurpleSat-8A2BE2?logo=github)
 
 </div>
@@ -116,6 +116,8 @@
 
 ### Docker 部署
 
+> 🔒 **推荐阅读 [README-Docker.md](README-Docker.md)**：加固版 Docker 部署指南（网络隔离、最小权限、资源限额、验证清单、出口防火墙），从全新服务器开始一步一步操作。下面是原有的基础版步骤。
+
 本章写给**第一次自己部署网站的人**：从服务器上 Docker 与 Docker Compose 已经装好之后的第一条命令开始，一步一步做到「别人在浏览器输入你的域名就能打开本站」。每一步都写了**要做什么、为什么、命令、应该看到什么、出错怎么办**。照着复制粘贴即可。
 
 > **注意**：本仓库不提供公开的预构建镜像（Docker 镜像名必须全小写，且 `ghcr.io` 上的包默认私有，直接 `docker pull` 会报 `denied`）。所以下面的流程是**在你自己的服务器上用源码构建镜像**，这一步全自动，只是第一次需要等几分钟。
@@ -165,6 +167,8 @@
 
 ---
 #### Docker 和 Docker Compose安装步骤
+
+[Docker部署文档-v2.8.9](README-Docker.md)
 
 1.更新软件包并安装必要软件
 
