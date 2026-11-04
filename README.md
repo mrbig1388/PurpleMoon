@@ -168,6 +168,8 @@
 ---
 #### Docker 和 Docker Compose安装步骤
 
+[Docker部署文档-v2.8.9](README-Docker.md)
+
 1.更新软件包并安装必要软件
 
 ```bash
